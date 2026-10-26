@@ -38107,7 +38107,7 @@ function splitDiff(diff2) {
     return { path: match?.[2] ?? match?.[1] ?? "", text };
   });
 }
-function compact(file) {
+function compact(file, context = 3) {
   const out = [`File: ${file.path}`];
   for (const hunk of file.text.split(/^(?=@@ )/m).slice(1)) {
     const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/m.exec(hunk);
@@ -38121,7 +38121,7 @@ function compact(file) {
       line += 1;
       return { change: kind === "+", text: numbered };
     });
-    const near = (i) => rows[i - 1]?.change || rows[i]?.change || rows[i + 1]?.change;
+    const near = (i) => rows.slice(Math.max(0, i - context), i + context + 1).some((row) => row.change);
     let gap = false;
     out.push(`@@${header[2]?.trimEnd() ? ` ${header[2].trim()}` : ""}`);
     rows.forEach((row, i) => {
@@ -38154,8 +38154,9 @@ function buildBrief(pr, diff2) {
   const close = "\n```";
   const note = (shown2, total) => `
 The diff is cut at ${shown2.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} characters. Review only what is shown.`;
-  const body = kept.map(compact).join("\n\n");
   const room = LIMITS.brief - head.length - open2.length - close.length;
+  const bodies = [3, 2, 1].map((lines) => kept.map((f) => compact(f, lines)).join("\n\n"));
+  const body = bodies.find((b) => b.length <= room) ?? bodies.at(-1);
   let shown = body;
   let truncated = false;
   if (body.length > room) {

@@ -41,11 +41,10 @@ export function splitDiff(diff: string): FileDiff[] {
 }
 
 /**
- * One file's changes in fewer characters than a unified diff: a single line of
- * context around each change instead of three, and every kept line prefixed
- * with its line number in the new file so the reviewer can cite it.
+ * One file's changes with `context` lines kept around each change, every kept
+ * line prefixed with its line number in the new file so the reviewer can cite it.
  */
-export function compact(file: FileDiff): string {
+export function compact(file: FileDiff, context = 3): string {
   const out = [`File: ${file.path}`];
   for (const hunk of file.text.split(/^(?=@@ )/m).slice(1)) {
     const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/m.exec(hunk);
@@ -63,7 +62,7 @@ export function compact(file: FileDiff): string {
         line += 1;
         return { change: kind === "+", text: numbered };
       });
-    const near = (i: number) => rows[i - 1]?.change || rows[i]?.change || rows[i + 1]?.change;
+    const near = (i: number) => rows.slice(Math.max(0, i - context), i + context + 1).some((row) => row.change);
     let gap = false;
     out.push(`@@${header[2]?.trimEnd() ? ` ${header[2].trim()}` : ""}`);
     rows.forEach((row, i) => {
@@ -99,8 +98,10 @@ export function buildBrief(pr: PullRequest, diff: string): { title: string; brie
   const open = "```diff\n";
   const close = "\n```";
   const note = (shown: number, total: number) => `\nThe diff is cut at ${shown.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} characters. Review only what is shown.`;
-  const body = kept.map(compact).join("\n\n");
   const room = LIMITS.brief - head.length - open.length - close.length;
+  // Full context when it fits: a reviewer who cannot see the surrounding lines invents problems in them.
+  const bodies = [3, 2, 1].map((lines) => kept.map((f) => compact(f, lines)).join("\n\n"));
+  const body = bodies.find((b) => b.length <= room) ?? bodies.at(-1)!;
 
   let shown = body;
   let truncated = false;

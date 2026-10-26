@@ -42,6 +42,16 @@ describe("buildBrief", () => {
     expect(brief.brief).not.toMatch(/line 399 of/);
   });
 
+  it("narrows the context only when the full diff does not fit", () => {
+    const hunk = (start: number) => [`@@ -${start},7 +${start},7 @@`, " c1", " c2", " c3", "-old", "+new", " c4", " c5", " c6"].join("\n");
+    const one = `diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n${hunk(10)}\n`;
+    expect(buildBrief(pr, one).brief).toContain(" 10 c1");
+    const many = `diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n${Array.from({ length: 60 }, (_, i) => hunk(10 + i * 20)).join("\n")}\n`;
+    const brief = buildBrief(pr, many);
+    expect(brief.brief).not.toContain(" 10 c1");
+    expect(brief.brief).toContain(" 12 c3");
+  });
+
   it("says so when nothing reviewable changed", () => {
     expect(buildBrief(pr, file("yarn.lock", "+x")).brief).toMatch(/The diff has no reviewable changes\.$/);
   });
@@ -70,14 +80,17 @@ describe("compact", () => {
     "\\ No newline at end of file",
   ].join("\n");
 
-  it("keeps one line of context, numbers lines in the new file and marks the gaps", () => {
-    expect(compact(splitDiff(diff)[0]!)).toBe(
+  it("keeps the asked context, numbers lines in the new file and marks the gaps", () => {
+    expect(compact(splitDiff(diff)[0]!, 1)).toBe(
       ["File: src/a.ts", "@@ export function retry() {", " …", " 12 twelve", "-   for (let i = 0; i <= n; i++) {", "+13   for (let i = 0; i < n; i++) {", " 14 fourteen", " …"].join("\n"),
     );
   });
 
-  it("is shorter than the diff it replaces", () => {
-    expect(compact(splitDiff(diff)[0]!).length).toBeLessThan(diff.length);
+  it("keeps three lines of context by default", () => {
+    const text = compact(splitDiff(diff)[0]!);
+    expect(text).toContain(" 10 ten");
+    expect(text).toContain(" 16 sixteen");
+    expect(text).not.toContain("…");
   });
 });
 
