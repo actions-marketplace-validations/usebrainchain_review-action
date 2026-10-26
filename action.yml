@@ -1,0 +1,38 @@
+name: BrainChain review
+description: Review each pull request with a frontier model, and pay only for a review that passes Jev's grade.
+author: BrainChain
+branding:
+  icon: check-circle
+  color: gray-dark
+
+inputs:
+  payer-key:
+    description: Private key of the wallet that pays for reviews. Store it as a repository secret and keep only what you plan to spend in it.
+    required: true
+  pay-on:
+    description: "base pays in USDC on Base with a signature alone; robinhood pays in USDG on Robinhood Chain after a one-time Permit2 approval."
+    default: base
+  network:
+    description: mainnet, or testnet for Base Sepolia and Robinhood Chain testnet with test tokens.
+    default: mainnet
+  max-price:
+    description: The most one review may cost, in USDC or USDG.
+    default: "1"
+  wait-minutes:
+    description: How long to wait for the graded review before the job ends. The order keeps running either way.
+    default: "20"
+  github-token:
+    description: Token used to read the diff and post the review. Needs pull-requests write.
+    default: ${{ github.token }}
+
+outputs:
+  order:
+    description: The BrainChain order id.
+  task-id:
+    description: The task's id on BrainChain.
+  accepted:
+    description: true when Jev accepted the review and it was posted, false when it was refunded.
+
+runs:
+  using: node24
+  main: dist/index.js

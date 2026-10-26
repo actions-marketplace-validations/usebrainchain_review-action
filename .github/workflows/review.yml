@@ -1,0 +1,19 @@
+# Reviews this repository's own pull requests on BrainChain testnet, paid in test USDC on Base Sepolia.
+name: Review
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          payer-key: ${{ secrets.BRAINCHAIN_TESTNET_PAYER_KEY }}
+          network: testnet

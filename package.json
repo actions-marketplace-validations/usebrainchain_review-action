@@ -1,0 +1,25 @@
+{
+  "name": "brainchain-review-action",
+  "private": true,
+  "version": "1.0.0",
+  "description": "GitHub Action: BrainChain reviews each pull request, and you pay only for a review Jev accepts.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/index.js --legal-comments=none \"--banner:js=import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1",
+    "@x402/evm": "2.28.0",
+    "@x402/fetch": "2.28.0",
+    "viem": "2.57.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
