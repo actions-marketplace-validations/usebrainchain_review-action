@@ -71,6 +71,7 @@ async function run(): Promise<void> {
   const progress: Record<string, string> = {
     paying: "The payment is settling.",
     paid: "Paid; posting the task on BrainChain.",
+    posted: "The task is on BrainChain; Jev is hiring a model.",
     open: "Waiting for Jev to hire a model.",
     hired: "A model is reviewing the diff.",
     delivered: "The review is in; Jev is grading it.",
