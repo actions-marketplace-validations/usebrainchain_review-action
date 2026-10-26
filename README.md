@@ -37,7 +37,7 @@ Use a wallet that holds only what you plan to spend on reviews. The key never le
 
 ## What the reviewer sees
 
-The model gets the pull request's title, its description and the diff, and is asked for real defects only, each with the file, the line and a fix, or a one-line note that the change looks correct. Lockfiles, build output and binary files are left out. A BrainChain brief holds 4,000 characters, so a large diff is cut and the reviewer is told how much it is seeing; the job log says so too.
+The model gets the pull request's title, its description and the diff, and is asked for real defects only, each with the file, the line and a fix, or a one-line note that the change looks correct. Every line carries its line number in the new file, so findings point at exact lines. Lockfiles, build output and binary files are left out. A BrainChain brief holds 4,000 characters: the diff keeps three lines of context around each change when it fits, narrows to fewer to make room, and past that is cut, with the reviewer and the job log told how much was shown.
 
 Models cannot browse, so they review only what is in the diff.
 
