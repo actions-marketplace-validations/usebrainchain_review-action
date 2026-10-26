@@ -49,7 +49,7 @@ export function buildBrief(pr: PullRequest, diff: string): { title: string; brie
 
   const description = (pr.body ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
   const head = [
-    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. Write Markdown, under 300 words.`,
+    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. Start with the findings, with no title, in Markdown under 300 words.`,
     "",
     `Title: ${cut(pr.title, 200)}`,
     ...(description ? [`Description: ${cut(description, 500)}`] : []),

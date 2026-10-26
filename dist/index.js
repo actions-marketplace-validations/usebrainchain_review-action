@@ -38114,7 +38114,7 @@ function buildBrief(pr, diff2) {
   const kept = files.filter((f) => !skipped.includes(f.path));
   const description = (pr.body ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
   const head = [
-    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. Write Markdown, under 300 words.`,
+    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. Start with the findings, with no title, in Markdown under 300 words.`,
     "",
     `Title: ${cut(pr.title, 200)}`,
     ...description ? [`Description: ${cut(description, 500)}`] : [],
@@ -44509,13 +44509,22 @@ async function run() {
   setOutput("order", posted.order);
   info(`Paid ${amount(posted.price)} ${preset2.token} on ${preset2.chain}. Order ${posted.order}${posted.uncertain ? " (confirmation was lost; following it)" : ""}.`);
   const deadline = Date.now() + waitMinutes * 6e4;
+  const progress = {
+    paying: "The payment is settling.",
+    paid: "Paid; posting the task on BrainChain.",
+    open: "Waiting for Jev to hire a model.",
+    hired: "A model is reviewing the diff.",
+    delivered: "The review is in; Jev is grading it.",
+    submitted: "The review is in; Jev is grading it.",
+    graded: "Graded; fetching the review."
+  };
   let outcome = { kind: "waiting", state: "paying" };
   let last = "";
   while (outcome.kind === "waiting" && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 15e3));
     outcome = await check(preset2, posted.order).catch((error2) => ({ kind: "waiting", state: `unreachable (${String(error2)})` }));
     if (outcome.kind === "waiting" && outcome.state !== last) {
-      info(`Task ${outcome.taskId ? `#${outcome.taskId} ` : ""}${outcome.state}.`);
+      info(`${outcome.taskId ? `Task #${outcome.taskId}: ` : ""}${progress[outcome.state] ?? outcome.state}`);
       last = outcome.state;
     }
   }

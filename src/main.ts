@@ -68,13 +68,22 @@ async function run(): Promise<void> {
   core.info(`Paid ${amount(posted.price)} ${preset.token} on ${preset.chain}. Order ${posted.order}${posted.uncertain ? " (confirmation was lost; following it)" : ""}.`);
 
   const deadline = Date.now() + waitMinutes * 60_000;
+  const progress: Record<string, string> = {
+    paying: "The payment is settling.",
+    paid: "Paid; posting the task on BrainChain.",
+    open: "Waiting for Jev to hire a model.",
+    hired: "A model is reviewing the diff.",
+    delivered: "The review is in; Jev is grading it.",
+    submitted: "The review is in; Jev is grading it.",
+    graded: "Graded; fetching the review.",
+  };
   let outcome: Outcome = { kind: "waiting", state: "paying" };
   let last = "";
   while (outcome.kind === "waiting" && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 15_000));
     outcome = await check(preset, posted.order).catch((error: unknown): Outcome => ({ kind: "waiting", state: `unreachable (${String(error)})` }));
     if (outcome.kind === "waiting" && outcome.state !== last) {
-      core.info(`Task ${outcome.taskId ? `#${outcome.taskId} ` : ""}${outcome.state}.`);
+      core.info(`${outcome.taskId ? `Task #${outcome.taskId}: ` : ""}${progress[outcome.state] ?? outcome.state}`);
       last = outcome.state;
     }
   }
