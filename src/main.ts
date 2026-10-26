@@ -8,7 +8,7 @@ import { buildBrief } from "./brief.js";
 import { check, post, type Outcome } from "./desk.js";
 import { comment, diff } from "./github.js";
 import { amount, preset as presetFor, units } from "./presets.js";
-import { reviewComment } from "./review.js";
+import { MARKER, reviewComment } from "./review.js";
 
 interface PullRequestEvent {
   pull_request?: {
@@ -16,7 +16,7 @@ interface PullRequestEvent {
     title: string;
     body: string | null;
     draft?: boolean;
-    head: { repo: { full_name: string } | null };
+    head: { sha?: string; repo: { full_name: string } | null };
     base: { repo: { full_name: string } };
   };
 }
@@ -93,7 +93,7 @@ async function run(): Promise<void> {
   switch (outcome.kind) {
     case "accepted": {
       core.setOutput("accepted", "true");
-      const url = await comment(token, repo, pr.number, reviewComment(preset, posted, outcome));
+      const url = await comment(token, repo, pr.number, reviewComment(preset, posted, outcome, pr.head.sha), MARKER);
       core.info(`Review posted: ${url}`);
       return;
     }

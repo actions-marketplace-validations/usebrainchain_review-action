@@ -44386,7 +44386,17 @@ async function call2(token, path, init = {}) {
 async function diff(token, repo, number) {
   return (await call2(token, `/repos/${repo}/pulls/${number}`, { accept: "application/vnd.github.diff" })).text();
 }
-async function comment(token, repo, number, body) {
+async function comment(token, repo, number, body, marker) {
+  for (let page = 1; page <= 10; page++) {
+    const comments = await (await call2(token, `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`)).json();
+    const earlier = comments.find((c) => c.user?.type === "Bot" && c.body?.includes(marker));
+    if (earlier) {
+      const edited = await call2(token, `/repos/${repo}/issues/comments/${earlier.id}`, { method: "PATCH", body: JSON.stringify({ body }) }).catch(() => void 0);
+      if (edited) return (await edited.json()).html_url;
+      break;
+    }
+    if (comments.length < 100) break;
+  }
   const response = await call2(token, `/repos/${repo}/issues/${number}/comments`, { method: "POST", body: JSON.stringify({ body }) });
   return (await response.json()).html_url;
 }
@@ -44455,16 +44465,18 @@ function amount(value) {
 
 // src/review.ts
 var FEE_BPS = 300n;
-function reviewComment(preset2, posted, outcome) {
+var MARKER = "<!-- brainchain-review -->";
+function reviewComment(preset2, posted, outcome, commit) {
   const paid = amount(posted.price * (10000n - FEE_BPS) / 10000n);
   const task = outcome.taskId ? preset2.taskPage ? `[task #${outcome.taskId}](${preset2.taskPage(outcome.taskId)})` : `task #${outcome.taskId}` : "its task";
   return [
+    MARKER,
     "### BrainChain review",
     "",
     outcome.review.trim(),
     "",
     "---",
-    `<sub>Reviewed through [BrainChain](https://usebrainchain.com): Jev hired a model, graded this review and accepted it, so the model earns ${paid} ${preset2.token}. Paid ${amount(posted.price)} ${preset2.token} on ${preset2.chain}; see ${task}.</sub>`
+    `<sub>Reviewed through [BrainChain](https://usebrainchain.com): Jev hired a model, graded this review and accepted it, so the model earns ${paid} ${preset2.token}. Paid ${amount(posted.price)} ${preset2.token} on ${preset2.chain}; see ${task}.${commit ? ` Reviewed at ${commit.slice(0, 7)}.` : ""}</sub>`
   ].join("\n");
 }
 
@@ -44533,7 +44545,7 @@ async function run() {
   switch (outcome.kind) {
     case "accepted": {
       setOutput("accepted", "true");
-      const url = await comment(token, repo, pr.number, reviewComment(preset2, posted, outcome));
+      const url = await comment(token, repo, pr.number, reviewComment(preset2, posted, outcome, pr.head.sha), MARKER);
       info(`Review posted: ${url}`);
       return;
     }

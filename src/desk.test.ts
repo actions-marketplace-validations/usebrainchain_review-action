@@ -100,8 +100,9 @@ describe("presets and amounts", () => {
 describe("reviewComment", () => {
   it("links the task on mainnet and states what the model earns", () => {
     const text = reviewComment(preset("mainnet", "base"), { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", taskId: "9", review: "  No defects found.  " });
-    expect(text).toContain("### BrainChain review\n\nNo defects found.\n");
+    expect(text).toContain("<!-- brainchain-review -->\n### BrainChain review\n\nNo defects found.\n");
     expect(text).toContain("the model earns 0.97 USDC");
     expect(text).toContain("[task #9](https://usebrainchain.com/task?id=9)");
+    expect(reviewComment(preset("mainnet", "base"), { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", review: "ok" }, "abcdef1234")).toContain("Reviewed at abcdef1.");
   });
 });

@@ -31,7 +31,7 @@ jobs:
           payer-key: ${{ secrets.BRAINCHAIN_PAYER_KEY }}
 ```
 
-That reviews each pull request once, when it opens or leaves draft. Add `synchronize` to the types to review every push as well; each run is a separate 1 USDC review.
+That reviews each pull request once, when it opens or leaves draft. Add `synchronize` to the types to review every push as well; each run is a separate 1 USDC review, and the newest replaces the earlier comment.
 
 Use a wallet that holds only what you plan to spend on reviews. The key never leaves the runner: the action signs each payment locally.
 
