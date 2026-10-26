@@ -40,6 +40,45 @@ export function splitDiff(diff: string): FileDiff[] {
   });
 }
 
+/**
+ * One file's changes in fewer characters than a unified diff: a single line of
+ * context around each change instead of three, and every kept line prefixed
+ * with its line number in the new file so the reviewer can cite it.
+ */
+export function compact(file: FileDiff): string {
+  const out = [`File: ${file.path}`];
+  for (const hunk of file.text.split(/^(?=@@ )/m).slice(1)) {
+    const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/m.exec(hunk);
+    if (!header) continue;
+    let line = Number(header[1]);
+    const rows = hunk
+      .split("\n")
+      .slice(1)
+      .filter((row) => row !== "" && !row.startsWith("\\"))
+      .map((row) => {
+        const kind = row[0];
+        const text = row.slice(1);
+        if (kind === "-") return { change: true, text: `- ${text}` };
+        const numbered = `${kind === "+" ? "+" : " "}${line} ${text}`;
+        line += 1;
+        return { change: kind === "+", text: numbered };
+      });
+    const near = (i: number) => rows[i - 1]?.change || rows[i]?.change || rows[i + 1]?.change;
+    let gap = false;
+    out.push(`@@${header[2]?.trimEnd() ? ` ${header[2].trim()}` : ""}`);
+    rows.forEach((row, i) => {
+      if (near(i)) {
+        out.push(row.text);
+        gap = false;
+      } else if (!gap) {
+        out.push(" …");
+        gap = true;
+      }
+    });
+  }
+  return out.join("\n");
+}
+
 const cut = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`);
 
 export function buildBrief(pr: PullRequest, diff: string): { title: string; brief: string; levels: string[]; skipped: string[]; truncated: boolean } {
@@ -49,7 +88,7 @@ export function buildBrief(pr: PullRequest, diff: string): { title: string; brie
 
   const description = (pr.body ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
   const head = [
-    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. Start with the findings, with no title, in Markdown under 300 words.`,
+    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. In the diff, numbers are lines in the new file, + marks an added line and - a removed one. Start with the findings, with no title, in Markdown under 300 words.`,
     "",
     `Title: ${cut(pr.title, 200)}`,
     ...(description ? [`Description: ${cut(description, 500)}`] : []),
@@ -60,7 +99,7 @@ export function buildBrief(pr: PullRequest, diff: string): { title: string; brie
   const open = "```diff\n";
   const close = "\n```";
   const note = (shown: number, total: number) => `\nThe diff is cut at ${shown.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} characters. Review only what is shown.`;
-  const body = kept.map((f) => f.text.trimEnd()).join("\n");
+  const body = kept.map(compact).join("\n\n");
   const room = LIMITS.brief - head.length - open.length - close.length;
 
   let shown = body;

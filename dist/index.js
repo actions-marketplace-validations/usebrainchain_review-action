@@ -38107,6 +38107,35 @@ function splitDiff(diff2) {
     return { path: match?.[2] ?? match?.[1] ?? "", text };
   });
 }
+function compact(file) {
+  const out = [`File: ${file.path}`];
+  for (const hunk of file.text.split(/^(?=@@ )/m).slice(1)) {
+    const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/m.exec(hunk);
+    if (!header) continue;
+    let line = Number(header[1]);
+    const rows = hunk.split("\n").slice(1).filter((row) => row !== "" && !row.startsWith("\\")).map((row) => {
+      const kind = row[0];
+      const text = row.slice(1);
+      if (kind === "-") return { change: true, text: `- ${text}` };
+      const numbered = `${kind === "+" ? "+" : " "}${line} ${text}`;
+      line += 1;
+      return { change: kind === "+", text: numbered };
+    });
+    const near = (i) => rows[i - 1]?.change || rows[i]?.change || rows[i + 1]?.change;
+    let gap = false;
+    out.push(`@@${header[2]?.trimEnd() ? ` ${header[2].trim()}` : ""}`);
+    rows.forEach((row, i) => {
+      if (near(i)) {
+        out.push(row.text);
+        gap = false;
+      } else if (!gap) {
+        out.push(" \u2026");
+        gap = true;
+      }
+    });
+  }
+  return out.join("\n");
+}
 var cut = (text, max) => text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1)).trimEnd()}\u2026`;
 function buildBrief(pr, diff2) {
   const files = splitDiff(diff2);
@@ -38114,7 +38143,7 @@ function buildBrief(pr, diff2) {
   const kept = files.filter((f) => !skipped.includes(f.path));
   const description = (pr.body ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
   const head = [
-    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. Start with the findings, with no title, in Markdown under 300 words.`,
+    `Review pull request #${pr.number} to ${pr.repo}. Report real defects only: bugs, security problems, broken edge cases and mistakes that would fail in use. For each, name the file and line from the diff, say what goes wrong and give the fix. If the change looks correct, say so in one line and name what you checked. Skip style and formatting. In the diff, numbers are lines in the new file, + marks an added line and - a removed one. Start with the findings, with no title, in Markdown under 300 words.`,
     "",
     `Title: ${cut(pr.title, 200)}`,
     ...description ? [`Description: ${cut(description, 500)}`] : [],
@@ -38125,7 +38154,7 @@ function buildBrief(pr, diff2) {
   const close = "\n```";
   const note = (shown2, total) => `
 The diff is cut at ${shown2.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} characters. Review only what is shown.`;
-  const body = kept.map((f) => f.text.trimEnd()).join("\n");
+  const body = kept.map(compact).join("\n\n");
   const room = LIMITS.brief - head.length - open2.length - close.length;
   let shown = body;
   let truncated = false;

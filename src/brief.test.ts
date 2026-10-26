@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { buildBrief, LIMITS, splitDiff } from "./brief.js";
+import { buildBrief, compact, LIMITS, splitDiff } from "./brief.js";
 
-const file = (path: string, body: string) => `diff --git a/${path} b/${path}\nindex 1..2 100644\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n${body}\n`;
+const file = (path: string, body: string) => `diff --git a/${path} b/${path}\nindex 1..2 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n${body}\n`;
 const pr = { number: 7, title: "Fix the retry loop", body: "Retries now stop after three attempts.\n<!-- template -->", repo: "acme/api" };
 
 describe("buildBrief", () => {
@@ -19,15 +19,16 @@ describe("buildBrief", () => {
     expect(brief.brief).toContain("Title: Fix the retry loop");
     expect(brief.brief).toContain("Description: Retries now stop after three attempts.");
     expect(brief.brief).not.toContain("template");
-    expect(brief.brief).toContain("+  for (let i = 0; i < 3; i++) {");
+    expect(brief.brief).toContain("File: src/retry.ts");
+    expect(brief.brief).toContain("+1   for (let i = 0; i < 3; i++) {");
     expect(brief.truncated).toBe(false);
   });
 
   it("leaves lockfiles and build output out and names them", () => {
     const brief = buildBrief(pr, file("pnpm-lock.yaml", "+lots") + file("dist/index.js", "+bundle") + file("src/a.ts", "+real change"));
     expect(brief.skipped).toEqual(["pnpm-lock.yaml", "dist/index.js"]);
-    expect(brief.brief).toContain("+real change");
-    expect(brief.brief).not.toContain("+bundle");
+    expect(brief.brief).toContain("real change");
+    expect(brief.brief).not.toContain("bundle");
     expect(brief.brief).toContain("Not shown (lockfiles, build output, binaries): pnpm-lock.yaml, dist/index.js");
   });
 
@@ -38,6 +39,7 @@ describe("buildBrief", () => {
     expect(brief.brief.length).toBeLessThanOrEqual(LIMITS.brief);
     expect(brief.brief).toMatch(/The diff is cut at [\d,]+ of [\d,]+ characters\. Review only what is shown\.$/);
     expect(brief.brief).toMatch(/of a long change\n```\n/);
+    expect(brief.brief).not.toMatch(/line 399 of/);
   });
 
   it("says so when nothing reviewable changed", () => {
@@ -50,3 +52,32 @@ describe("splitDiff", () => {
     expect(splitDiff(file("a.ts", "+1") + file("b/c.ts", "+2")).map((f) => f.path)).toEqual(["a.ts", "b/c.ts"]);
   });
 });
+
+describe("compact", () => {
+  const diff = [
+    "diff --git a/src/a.ts b/src/a.ts",
+    "--- a/src/a.ts",
+    "+++ b/src/a.ts",
+    "@@ -10,9 +10,9 @@ export function retry() {",
+    " ten",
+    " eleven",
+    " twelve",
+    "-  for (let i = 0; i <= n; i++) {",
+    "+  for (let i = 0; i < n; i++) {",
+    " fourteen",
+    " fifteen",
+    " sixteen",
+    "\\ No newline at end of file",
+  ].join("\n");
+
+  it("keeps one line of context, numbers lines in the new file and marks the gaps", () => {
+    expect(compact(splitDiff(diff)[0]!)).toBe(
+      ["File: src/a.ts", "@@ export function retry() {", " …", " 12 twelve", "-   for (let i = 0; i <= n; i++) {", "+13   for (let i = 0; i < n; i++) {", " 14 fourteen", " …"].join("\n"),
+    );
+  });
+
+  it("is shorter than the diff it replaces", () => {
+    expect(compact(splitDiff(diff)[0]!).length).toBeLessThan(diff.length);
+  });
+});
+
