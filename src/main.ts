@@ -6,9 +6,9 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { buildBrief } from "./brief.js";
 import { check, post, type Outcome } from "./desk.js";
-import { comment, diff } from "./github.js";
+import { comment, diff, earlierReview } from "./github.js";
 import { amount, preset as presetFor, units } from "./presets.js";
-import { MARKER, reviewComment } from "./review.js";
+import { MARKER, reviewComment, reviewedCommit } from "./review.js";
 
 interface PullRequestEvent {
   pull_request?: {
@@ -25,7 +25,8 @@ const erc20 = parseAbi(["function balanceOf(address) view returns (uint256)"]);
 
 async function run(): Promise<void> {
   const path = process.env.GITHUB_EVENT_PATH;
-  if (!path) throw new Error("Run this action in a GitHub workflow, on pull_request events.");
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  if (!path || (eventName !== "pull_request" && eventName !== "pull_request_target")) throw new Error("Run this action in a GitHub workflow, on pull_request events.");
   const event = JSON.parse(readFileSync(path, "utf8")) as PullRequestEvent;
   const pr = event.pull_request;
   if (!pr) {
@@ -37,13 +38,20 @@ async function run(): Promise<void> {
     return;
   }
   const repo = pr.base.repo.full_name;
-  const key = core.getInput("payer-key");
-  if (!key) {
-    // Pull requests from forks get no secrets, so they are skipped rather than failed.
-    core.notice(pr.head.repo?.full_name !== repo ? "Pull request from a fork: secrets are not available, so no review was paid for." : "payer-key is empty: no review was paid for.");
+  // A fork's author is not the wallet's owner. Under pull_request_target a fork
+  // would get the secret, and every pull request it opened would be paid for.
+  if (pr.head.repo?.full_name !== repo) {
+    core.notice("Pull request from a fork: no review was paid for.");
     return;
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("payer-key must be a private key: 0x followed by 64 hex characters.");
+  const raw = core.getInput("payer-key").trim();
+  if (!raw) {
+    core.notice("payer-key is empty: no review was paid for.");
+    return;
+  }
+  core.setSecret(raw);
+  const key = raw.startsWith("0x") ? raw : `0x${raw}`;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("payer-key must be a private key: 64 hex characters, with or without 0x.");
   core.setSecret(key);
 
   const preset = presetFor(core.getInput("network") || "mainnet", core.getInput("pay-on") || "base");
@@ -57,6 +65,14 @@ async function run(): Promise<void> {
   const balance = await reader.readContract({ address: preset.asset, abi: erc20, functionName: "balanceOf", args: [account.address] });
   if (balance < maxPrice) {
     throw new Error(`The paying wallet ${account.address} holds ${amount(balance)} ${preset.token} on ${preset.chain}; a review costs up to ${amount(maxPrice)}. Nothing was charged.`);
+  }
+
+  // A re-run of a job that already posted a review for this commit pays nothing.
+  const head = pr.head.sha?.slice(0, 7);
+  const earlier = await earlierReview(token, repo, pr.number, MARKER);
+  if (head && earlier?.body && reviewedCommit(earlier.body) === head) {
+    core.notice(`This commit (${head}) already has a BrainChain review: ${earlier.html_url}`);
+    return;
   }
 
   const brief = buildBrief({ number: pr.number, title: pr.title, body: pr.body, repo }, await diff(token, repo, pr.number));
@@ -93,7 +109,13 @@ async function run(): Promise<void> {
   switch (outcome.kind) {
     case "accepted": {
       core.setOutput("accepted", "true");
-      const url = await comment(token, repo, pr.number, reviewComment(preset, posted, outcome, pr.head.sha), MARKER);
+      const body = reviewComment(preset, posted, outcome, pr.head.sha);
+      // The job summary keeps the paid review even if the comment cannot be posted.
+      await core.summary
+        .addRaw(body)
+        .write()
+        .catch((error: unknown) => core.warning(`Could not write the job summary: ${String(error)}`));
+      const url = await comment(token, repo, pr.number, body, MARKER);
       core.info(`Review posted: ${url}`);
       return;
     }
@@ -101,10 +123,17 @@ async function run(): Promise<void> {
       core.setOutput("accepted", "false");
       core.notice(`Jev did not accept the review, so it is not posted and the ${amount(posted.price)} ${preset.token} is refunded to ${account.address} on ${preset.chain}.`);
       return;
+    case "refund-failed":
+      core.setOutput("accepted", "false");
+      throw new Error(`Jev did not accept the review, and the refund to ${account.address} could not be sent automatically. BrainChain has been alerted; write to hello@usebrainchain.com with order ${posted.order}.`);
     case "failed":
       throw new Error(outcome.reason);
     case "waiting":
-      core.warning(`No graded review within ${waitMinutes} minutes. The order is still running: ${preset.desk}/x402/tasks/${posted.order}`);
+      if (outcome.state === "unknown") {
+        core.warning(`The payment desk has no record of order ${posted.order}. If ${account.address} shows a payment for it, write to hello@usebrainchain.com with the order id.`);
+      } else {
+        core.warning(`No graded review within ${waitMinutes} minutes, so none is posted. The order keeps running: ${preset.desk}/x402/tasks/${posted.order}`);
+      }
   }
 }
 

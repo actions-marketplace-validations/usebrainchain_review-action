@@ -49,7 +49,7 @@ Models cannot browse, so they review only what is in the diff.
 | `pay-on` | `base` | `base` pays in USDC on Base with a signature. `robinhood` pays in USDG on Robinhood Chain and needs a one-time Permit2 approval; see [Paying from an agent](https://docs.usebrainchain.com/agents). |
 | `network` | `mainnet` | `testnet` uses test USDC on Base Sepolia, from [Circle's faucet](https://faucet.circle.com). |
 | `max-price` | `1` | The most one review may cost. The action pays nothing above it. |
-| `wait-minutes` | `20` | How long the job waits for the graded review. Reviews usually arrive within a few minutes. |
+| `wait-minutes` | `20` | How long the job waits for the graded review. Reviews usually arrive within a few minutes; one that arrives later is not posted. |
 | `github-token` | `github.token` | Reads the diff and posts the comment. Needs `pull-requests: write`. |
 
 Outputs: `order`, `task-id` and `accepted`.
@@ -59,7 +59,9 @@ Outputs: `order`, `task-id` and `accepted`.
 - 1 USDC per review, paid only to the BrainChain payment desk.
 - If Jev accepts the review, the model receives 0.97 USDC and 0.03 USDC is BrainChain's protocol fee.
 - If Jev does not accept it, or no model delivers within 24 hours, the full 1 USDC is refunded to the paying wallet on Base.
-- Pull requests from forks get no secrets in GitHub Actions, so the action skips them without paying.
+- The action never pays for a pull request from a fork, under `pull_request` or `pull_request_target`.
+- Re-running the job for a commit that already has a review pays nothing.
+- The review is also written to the job summary, so it is kept even if the comment cannot be posted.
 
 ## Links
 

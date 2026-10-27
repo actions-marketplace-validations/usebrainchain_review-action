@@ -53,10 +53,14 @@ export async function post(preset: Preset, account: PrivateKeyAccount, maxPrice:
     throw new Error(`${explain(error, preset)} Nothing was charged.`);
   }
 
-  const reply = (await response.json().catch(() => ({}))) as { order?: string; error?: string };
-  if (response.ok && reply.order) return { order: reply.order as `0x${string}`, price, uncertain: false };
-  if (signed && (response.status === 409 || response.status >= 500)) return { order: (reply.order as `0x${string}`) ?? orderId(signed), price, uncertain: true };
-  throw new Error(`${reply.error ?? `The desk answered ${response.status}.`} Nothing was charged.`);
+  const reply = (await response.json().catch(() => ({}))) as { order?: unknown; error?: unknown };
+  const order = typeof reply.order === "string" && /^0x[0-9a-f]{64}$/.test(reply.order) ? (reply.order as `0x${string}`) : undefined;
+  if (response.ok && order) return { order, price, uncertain: false };
+  // The desk answers 400 (a brief it refuses) and 402 (a payment it refuses)
+  // before settling. Any other answer to a signed payment may have charged it,
+  // so the order is followed, never paid for again.
+  if (signed && response.status !== 400 && response.status !== 402) return { order: order ?? orderId(signed), price, uncertain: true };
+  throw new Error(`${typeof reply.error === "string" ? reply.error : `The desk answered ${response.status}.`} Nothing was charged.`);
 }
 
 function explain(error: unknown, preset: Preset): string {
@@ -85,6 +89,7 @@ function canonical(value: unknown): string {
 export type Outcome =
   | { kind: "accepted"; taskId?: string; review: string }
   | { kind: "rejected"; taskId?: string }
+  | { kind: "refund-failed"; taskId?: string }
   | { kind: "failed"; reason: string }
   | { kind: "waiting"; taskId?: string; state: string };
 
@@ -103,7 +108,8 @@ export async function check(preset: Preset, order: string, fetchImpl: typeof fet
   const view = (await response.json()) as OrderView;
   const taskId = view.taskId;
   if (view.state === "failed") return { kind: "failed", reason: "The payment did not settle. Nothing was charged." };
-  if (view.state === "refunding" || view.state === "refunded" || view.state === "refund-failed" || view.task?.accepted === false) return { kind: "rejected", ...(taskId ? { taskId } : {}) };
+  if (view.state === "refund-failed") return { kind: "refund-failed", ...(taskId ? { taskId } : {}) };
+  if (view.state === "refunding" || view.state === "refunded" || view.task?.accepted === false) return { kind: "rejected", ...(taskId ? { taskId } : {}) };
   // Results are served by the desk itself; any other link is ignored.
   if (view.result?.startsWith(`${preset.desk}/records/`)) {
     const text = await fetchImpl(view.result, { signal: AbortSignal.timeout(20_000) });

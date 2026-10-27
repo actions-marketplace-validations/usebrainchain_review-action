@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { check, orderId, post } from "./desk.js";
 import { amount, preset, units } from "./presets.js";
-import { reviewComment } from "./review.js";
+import { neutralize, reviewComment, reviewedCommit } from "./review.js";
 
 // Anvil's second default account: a public test key that holds nothing anywhere.
 const account = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -50,6 +50,18 @@ describe("post", () => {
     expect(posted).toMatchObject({ order: orderId(seen[0]!), uncertain: true });
   });
 
+  it("follows any reply to a signed payment other than 400 or 402, never reporting it uncharged", async () => {
+    for (const reply of [new Response("not json", { status: 200 }), Response.json({ id: "x" }, { status: 202 }), new Response("{}", { status: 408 }), new Response("{}", { status: 429 })]) {
+      const { fetchImpl, seen } = desk({}, () => reply.clone());
+      expect(await post(base, account, units("1"), brief, fetchImpl)).toMatchObject({ order: orderId(seen[0]!), uncertain: true });
+    }
+  });
+
+  it("prints a desk error that is not a string as the status", async () => {
+    const { fetchImpl } = desk({}, () => Response.json({ error: { code: 1 } }, { status: 400 }));
+    await expect(post(base, account, units("1"), brief, fetchImpl)).rejects.toThrow("The desk answered 400. Nothing was charged.");
+  });
+
   it("reports a refused brief as uncharged", async () => {
     const { fetchImpl } = desk({}, () => Response.json({ error: "brief must be 1 to 4,000 characters." }, { status: 400 }));
     await expect(post(base, account, units("1"), brief, fetchImpl)).rejects.toThrow("brief must be 1 to 4,000 characters. Nothing was charged.");
@@ -71,10 +83,11 @@ describe("check", () => {
     expect((await check(base, order, reply(view))).kind).toBe("waiting");
   });
 
-  it("treats a grade that did not accept, or any refund state, as rejected", async () => {
+  it("treats a grade that did not accept, or a refund, as rejected, and a failed refund as its own outcome", async () => {
     for (const view of [{ state: "posted", task: { status: "graded", accepted: false } }, { state: "refunded" }, { state: "refunding" }]) {
       expect((await check(base, order, reply(view))).kind).toBe("rejected");
     }
+    expect((await check(base, order, reply({ state: "refund-failed", taskId: "4" }))).kind).toBe("refund-failed");
   });
 
   it("keeps waiting while the task runs", async () => {
@@ -106,3 +119,29 @@ describe("reviewComment", () => {
     expect(reviewComment(preset("mainnet", "base"), { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", review: "ok" }, "abcdef1234")).toContain("Reviewed at abcdef1.");
   });
 });
+
+describe("neutralize", () => {
+  it("breaks mentions so they notify no one, and leaves emails and code alone", () => {
+    const text = neutralize("Ping @alice and @acme/team, mail a@b.com, and `@decorator`.");
+    expect(text).toContain("@\u200balice");
+    expect(text).toContain("@\u200bacme/team");
+    expect(text).toContain("a@b.com");
+    expect(text).toContain("`@decorator`");
+  });
+
+  it("stops the review from hiding the footer or growing past GitHub's limit", () => {
+    expect(neutralize("<!-- hide <details><summary>x")).toBe("&lt;!-- hide &lt;details>&lt;summary>x");
+    const long = neutralize("a".repeat(70_000));
+    expect(long.length).toBeLessThan(61_000);
+    expect(long).toMatch(/was cut here\.\]$/);
+  });
+});
+
+describe("reviewedCommit", () => {
+  it("reads the commit from this action's own comment only", () => {
+    const body = reviewComment(preset("mainnet", "base"), { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", review: "ok" }, "abcdef1234");
+    expect(reviewedCommit(body)).toBe("abcdef1");
+    expect(reviewedCommit("Reviewed at abcdef1.")).toBeUndefined();
+  });
+});
+

@@ -27,18 +27,23 @@ interface IssueComment {
   user?: { type?: string };
 }
 
-/** Posts the review, or replaces this action's earlier review on the same pull request. */
-export async function comment(token: string, repo: string, number: number, body: string, marker: string): Promise<string> {
+/** This action's earlier review comment on the pull request, if any. */
+export async function earlierReview(token: string, repo: string, number: number, marker: string): Promise<IssueComment | undefined> {
   for (let page = 1; page <= 10; page++) {
     const comments = (await (await call(token, `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`)).json()) as IssueComment[];
-    const earlier = comments.find((c) => c.user?.type === "Bot" && c.body?.includes(marker));
-    if (earlier) {
-      // A review left by another bot identity cannot be edited with this token; the paid review is posted anew instead.
-      const edited = await call(token, `/repos/${repo}/issues/comments/${earlier.id}`, { method: "PATCH", body: JSON.stringify({ body }) }).catch(() => undefined);
-      if (edited) return ((await edited.json()) as IssueComment).html_url;
-      break;
-    }
-    if (comments.length < 100) break;
+    const found = comments.find((c) => c.user?.type === "Bot" && c.body?.includes(marker));
+    if (found || comments.length < 100) return found;
+  }
+  return undefined;
+}
+
+/** Posts the review, or replaces this action's earlier review on the same pull request. */
+export async function comment(token: string, repo: string, number: number, body: string, marker: string): Promise<string> {
+  const earlier = await earlierReview(token, repo, number, marker);
+  if (earlier) {
+    // A review left by another bot identity cannot be edited with this token; the paid review is posted anew instead.
+    const edited = await call(token, `/repos/${repo}/issues/comments/${earlier.id}`, { method: "PATCH", body: JSON.stringify({ body }) }).catch(() => undefined);
+    if (edited) return ((await edited.json()) as IssueComment).html_url;
   }
   const response = await call(token, `/repos/${repo}/issues/${number}/comments`, { method: "POST", body: JSON.stringify({ body }) });
   return ((await response.json()) as IssueComment).html_url;

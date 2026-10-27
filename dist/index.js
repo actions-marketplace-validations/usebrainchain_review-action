@@ -29262,6 +29262,7 @@ var Summary = class {
   }
 };
 var _summary = new Summary();
+var summary = _summary;
 
 // node_modules/@actions/core/lib/platform.js
 import os3 from "os";
@@ -44362,9 +44363,10 @@ async function post(preset2, account, maxPrice, brief, fetchImpl = fetch) {
     throw new Error(`${explain(error2, preset2)} Nothing was charged.`);
   }
   const reply = await response.json().catch(() => ({}));
-  if (response.ok && reply.order) return { order: reply.order, price, uncertain: false };
-  if (signed && (response.status === 409 || response.status >= 500)) return { order: reply.order ?? orderId(signed), price, uncertain: true };
-  throw new Error(`${reply.error ?? `The desk answered ${response.status}.`} Nothing was charged.`);
+  const order = typeof reply.order === "string" && /^0x[0-9a-f]{64}$/.test(reply.order) ? reply.order : void 0;
+  if (response.ok && order) return { order, price, uncertain: false };
+  if (signed && response.status !== 400 && response.status !== 402) return { order: order ?? orderId(signed), price, uncertain: true };
+  throw new Error(`${typeof reply.error === "string" ? reply.error : `The desk answered ${response.status}.`} Nothing was charged.`);
 }
 function explain(error2, preset2) {
   const message = (error2 instanceof Error ? error2.message : String(error2)).split("\n")[0] ?? "";
@@ -44388,7 +44390,8 @@ async function check(preset2, order, fetchImpl = fetch) {
   const view = await response.json();
   const taskId = view.taskId;
   if (view.state === "failed") return { kind: "failed", reason: "The payment did not settle. Nothing was charged." };
-  if (view.state === "refunding" || view.state === "refunded" || view.state === "refund-failed" || view.task?.accepted === false) return { kind: "rejected", ...taskId ? { taskId } : {} };
+  if (view.state === "refund-failed") return { kind: "refund-failed", ...taskId ? { taskId } : {} };
+  if (view.state === "refunding" || view.state === "refunded" || view.task?.accepted === false) return { kind: "rejected", ...taskId ? { taskId } : {} };
   if (view.result?.startsWith(`${preset2.desk}/records/`)) {
     const text = await fetchImpl(view.result, { signal: AbortSignal.timeout(2e4) });
     if (text.ok) return { kind: "accepted", ...taskId ? { taskId } : {}, review: await text.text() };
@@ -44416,16 +44419,19 @@ async function call2(token, path, init = {}) {
 async function diff(token, repo, number) {
   return (await call2(token, `/repos/${repo}/pulls/${number}`, { accept: "application/vnd.github.diff" })).text();
 }
-async function comment(token, repo, number, body, marker) {
+async function earlierReview(token, repo, number, marker) {
   for (let page = 1; page <= 10; page++) {
     const comments = await (await call2(token, `/repos/${repo}/issues/${number}/comments?per_page=100&page=${page}`)).json();
-    const earlier = comments.find((c) => c.user?.type === "Bot" && c.body?.includes(marker));
-    if (earlier) {
-      const edited = await call2(token, `/repos/${repo}/issues/comments/${earlier.id}`, { method: "PATCH", body: JSON.stringify({ body }) }).catch(() => void 0);
-      if (edited) return (await edited.json()).html_url;
-      break;
-    }
-    if (comments.length < 100) break;
+    const found = comments.find((c) => c.user?.type === "Bot" && c.body?.includes(marker));
+    if (found || comments.length < 100) return found;
+  }
+  return void 0;
+}
+async function comment(token, repo, number, body, marker) {
+  const earlier = await earlierReview(token, repo, number, marker);
+  if (earlier) {
+    const edited = await call2(token, `/repos/${repo}/issues/comments/${earlier.id}`, { method: "PATCH", body: JSON.stringify({ body }) }).catch(() => void 0);
+    if (edited) return (await edited.json()).html_url;
   }
   const response = await call2(token, `/repos/${repo}/issues/${number}/comments`, { method: "POST", body: JSON.stringify({ body }) });
   return (await response.json()).html_url;
@@ -44496,6 +44502,16 @@ function amount(value) {
 // src/review.ts
 var FEE_BPS = 300n;
 var MARKER = "<!-- brainchain-review -->";
+var MAX_REVIEW = 6e4;
+function neutralize(review) {
+  const text = review.length > MAX_REVIEW ? `${review.slice(0, MAX_REVIEW)}
+
+[The review is longer than a comment allows and was cut here.]` : review;
+  return text.replace(/<!--/g, "&lt;!--").replace(/<(\/?)(details|summary)\b/gi, "&lt;$1$2").replace(/(^|[^\w`])@(?=[A-Za-z0-9])/g, "$1@\u200B");
+}
+function reviewedCommit(body) {
+  return body.includes(MARKER) ? /Reviewed at ([0-9a-f]{7})\./.exec(body)?.[1] : void 0;
+}
 function reviewComment(preset2, posted, outcome, commit) {
   const paid = amount(posted.price * (10000n - FEE_BPS) / 10000n);
   const task = outcome.taskId ? preset2.taskPage ? `[task #${outcome.taskId}](${preset2.taskPage(outcome.taskId)})` : `task #${outcome.taskId}` : "its task";
@@ -44503,7 +44519,7 @@ function reviewComment(preset2, posted, outcome, commit) {
     MARKER,
     "### BrainChain review",
     "",
-    outcome.review.trim(),
+    neutralize(outcome.review.trim()),
     "",
     "---",
     `<sub>Reviewed through [BrainChain](https://usebrainchain.com): Jev hired a model, graded this review and accepted it, so the model earns ${paid} ${preset2.token}. Paid ${amount(posted.price)} ${preset2.token} on ${preset2.chain}; see ${task}.${commit ? ` Reviewed at ${commit.slice(0, 7)}.` : ""}</sub>`
@@ -44514,7 +44530,8 @@ function reviewComment(preset2, posted, outcome, commit) {
 var erc20 = parseAbi(["function balanceOf(address) view returns (uint256)"]);
 async function run() {
   const path = process.env.GITHUB_EVENT_PATH;
-  if (!path) throw new Error("Run this action in a GitHub workflow, on pull_request events.");
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  if (!path || eventName !== "pull_request" && eventName !== "pull_request_target") throw new Error("Run this action in a GitHub workflow, on pull_request events.");
   const event = JSON.parse(readFileSync(path, "utf8"));
   const pr = event.pull_request;
   if (!pr) {
@@ -44526,12 +44543,18 @@ async function run() {
     return;
   }
   const repo = pr.base.repo.full_name;
-  const key = getInput("payer-key");
-  if (!key) {
-    notice(pr.head.repo?.full_name !== repo ? "Pull request from a fork: secrets are not available, so no review was paid for." : "payer-key is empty: no review was paid for.");
+  if (pr.head.repo?.full_name !== repo) {
+    notice("Pull request from a fork: no review was paid for.");
     return;
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("payer-key must be a private key: 0x followed by 64 hex characters.");
+  const raw = getInput("payer-key").trim();
+  if (!raw) {
+    notice("payer-key is empty: no review was paid for.");
+    return;
+  }
+  setSecret(raw);
+  const key = raw.startsWith("0x") ? raw : `0x${raw}`;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("payer-key must be a private key: 64 hex characters, with or without 0x.");
   setSecret(key);
   const preset2 = preset(getInput("network") || "mainnet", getInput("pay-on") || "base");
   const maxPrice = units(getInput("max-price") || "1");
@@ -44543,6 +44566,12 @@ async function run() {
   const balance = await reader.readContract({ address: preset2.asset, abi: erc20, functionName: "balanceOf", args: [account.address] });
   if (balance < maxPrice) {
     throw new Error(`The paying wallet ${account.address} holds ${amount(balance)} ${preset2.token} on ${preset2.chain}; a review costs up to ${amount(maxPrice)}. Nothing was charged.`);
+  }
+  const head = pr.head.sha?.slice(0, 7);
+  const earlier = await earlierReview(token, repo, pr.number, MARKER);
+  if (head && earlier?.body && reviewedCommit(earlier.body) === head) {
+    notice(`This commit (${head}) already has a BrainChain review: ${earlier.html_url}`);
+    return;
   }
   const brief = buildBrief({ number: pr.number, title: pr.title, body: pr.body, repo }, await diff(token, repo, pr.number));
   if (brief.skipped.length) info(`Left out of the brief: ${brief.skipped.join(", ")}`);
@@ -44575,7 +44604,9 @@ async function run() {
   switch (outcome.kind) {
     case "accepted": {
       setOutput("accepted", "true");
-      const url = await comment(token, repo, pr.number, reviewComment(preset2, posted, outcome, pr.head.sha), MARKER);
+      const body = reviewComment(preset2, posted, outcome, pr.head.sha);
+      await summary.addRaw(body).write().catch((error2) => warning(`Could not write the job summary: ${String(error2)}`));
+      const url = await comment(token, repo, pr.number, body, MARKER);
       info(`Review posted: ${url}`);
       return;
     }
@@ -44583,10 +44614,17 @@ async function run() {
       setOutput("accepted", "false");
       notice(`Jev did not accept the review, so it is not posted and the ${amount(posted.price)} ${preset2.token} is refunded to ${account.address} on ${preset2.chain}.`);
       return;
+    case "refund-failed":
+      setOutput("accepted", "false");
+      throw new Error(`Jev did not accept the review, and the refund to ${account.address} could not be sent automatically. BrainChain has been alerted; write to hello@usebrainchain.com with order ${posted.order}.`);
     case "failed":
       throw new Error(outcome.reason);
     case "waiting":
-      warning(`No graded review within ${waitMinutes} minutes. The order is still running: ${preset2.desk}/x402/tasks/${posted.order}`);
+      if (outcome.state === "unknown") {
+        warning(`The payment desk has no record of order ${posted.order}. If ${account.address} shows a payment for it, write to hello@usebrainchain.com with the order id.`);
+      } else {
+        warning(`No graded review within ${waitMinutes} minutes, so none is posted. The order keeps running: ${preset2.desk}/x402/tasks/${posted.order}`);
+      }
   }
 }
 run().catch((error2) => setFailed(error2 instanceof Error ? error2.message : String(error2)));
