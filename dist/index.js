@@ -1309,7 +1309,7 @@ var require_util = __commonJS({
             }
             return controller.desiredSize > 0;
           },
-          async cancel(reason) {
+          async cancel(reason2) {
             await iterator.return();
           },
           type: "bytes"
@@ -1637,12 +1637,12 @@ var require_diagnostics = __commonJS({
         websocketDebuglog("connection opened %s%s", address, port ? `:${port}` : "");
       });
       diagnosticsChannel.channel("undici:websocket:close").subscribe((evt) => {
-        const { websocket, code, reason } = evt;
+        const { websocket, code, reason: reason2 } = evt;
         websocketDebuglog(
           "closed connection to %s - %s %s",
           websocket.url,
           code,
-          reason
+          reason2
         );
       });
       diagnosticsChannel.channel("undici:websocket:socket_error").subscribe((err) => {
@@ -5600,7 +5600,7 @@ Content-Type: ${value.type || "application/octet-stream"}\r
             }
             return controller.desiredSize > 0;
           },
-          async cancel(reason) {
+          async cancel(reason2) {
             await iterator.return();
           },
           type: "bytes"
@@ -9157,12 +9157,12 @@ var require_retry_handler = __commonJS({
         this.etag = null;
         this.resume = null;
         this.headersSent = false;
-        this.handler.onConnect((reason) => {
+        this.handler.onConnect((reason2) => {
           this.aborted = true;
           if (this.abort) {
-            this.abort(reason);
+            this.abort(reason2);
           } else {
-            this.reason = reason;
+            this.reason = reason2;
           }
         });
       }
@@ -11577,9 +11577,9 @@ var require_dump = __commonJS({
         this.#abort = abort;
         this.#handler.onConnect(this.#customAbort.bind(this));
       }
-      #customAbort(reason) {
+      #customAbort(reason2) {
         this.#aborted = true;
-        this.#reason = reason;
+        this.#reason = reason2;
       }
       // TODO: will require adjustment after new hooks are out
       onHeaders(statusCode, rawHeaders, resume, statusMessage) {
@@ -12606,13 +12606,13 @@ var require_response = __commonJS({
         urlList: init?.urlList ? [...init.urlList] : []
       };
     }
-    function makeNetworkError(reason) {
-      const isError = isErrorLike(reason);
+    function makeNetworkError(reason2) {
+      const isError = isErrorLike(reason2);
       return makeResponse({
         type: "error",
         status: 0,
-        error: isError ? reason : new Error(reason ? String(reason) : reason),
-        aborted: reason && reason.name === "AbortError"
+        error: isError ? reason2 : new Error(reason2 ? String(reason2) : reason2),
+        aborted: reason2 && reason2.name === "AbortError"
       });
     }
     function isNetworkError(response) {
@@ -13594,13 +13594,13 @@ var require_fetch = __commonJS({
         this.dump = false;
         this.state = "ongoing";
       }
-      terminate(reason) {
+      terminate(reason2) {
         if (this.state !== "ongoing") {
           return;
         }
         this.state = "terminated";
-        this.connection?.destroy(reason);
-        this.emit("terminated", reason);
+        this.connection?.destroy(reason2);
+        this.emit("terminated", reason2);
       }
       // https://fetch.spec.whatwg.org/#fetch-controller-abort
       abort(error63) {
@@ -13879,7 +13879,7 @@ var require_fetch = __commonJS({
         fetchParams.controller.dump = true;
       }
       if (request.integrity) {
-        const processBodyError = (reason) => fetchFinale(fetchParams, makeNetworkError(reason));
+        const processBodyError = (reason2) => fetchFinale(fetchParams, makeNetworkError(reason2));
         if (request.responseTainting === "opaque" || response.body == null) {
           processBodyError(response.error);
           return;
@@ -14357,9 +14357,9 @@ var require_fetch = __commonJS({
       const pullAlgorithm = async () => {
         await fetchParams.controller.resume();
       };
-      const cancelAlgorithm = (reason) => {
+      const cancelAlgorithm = (reason2) => {
         if (!isCancelled(fetchParams)) {
-          fetchParams.controller.abort(reason);
+          fetchParams.controller.abort(reason2);
         }
       };
       const stream = new ReadableStream(
@@ -14370,8 +14370,8 @@ var require_fetch = __commonJS({
           async pull(controller) {
             await pullAlgorithm(controller);
           },
-          async cancel(reason) {
-            await cancelAlgorithm(reason);
+          async cancel(reason2) {
+            await cancelAlgorithm(reason2);
           },
           type: "bytes"
         }
@@ -14421,7 +14421,7 @@ var require_fetch = __commonJS({
           }
         }
       };
-      function onAborted(reason) {
+      function onAborted(reason2) {
         if (isAborted(fetchParams)) {
           response.aborted = true;
           if (isReadable(stream)) {
@@ -14432,7 +14432,7 @@ var require_fetch = __commonJS({
         } else {
           if (isReadable(stream)) {
             fetchParams.controller.controller.error(new TypeError("terminated", {
-              cause: isErrorLike(reason) ? reason : void 0
+              cause: isErrorLike(reason2) ? reason2 : void 0
             }));
           }
         }
@@ -17008,16 +17008,16 @@ var require_util7 = __commonJS({
       }
       return code >= 3e3 && code <= 4999;
     }
-    function failWebsocketConnection(ws, reason) {
+    function failWebsocketConnection(ws, reason2) {
       const { [kController]: controller, [kResponse]: response } = ws;
       controller.abort();
       if (response?.socket && !response.socket.destroyed) {
         response.socket.destroy();
       }
-      if (reason) {
+      if (reason2) {
         fireEvent("error", ws, (type, init) => new ErrorEvent(type, init), {
-          error: new Error(reason),
-          message: reason
+          error: new Error(reason2),
+          message: reason2
         });
       }
     }
@@ -17275,7 +17275,7 @@ var require_connection = __commonJS({
       });
       return controller;
     }
-    function closeWebSocketConnection(ws, code, reason, reasonByteLength) {
+    function closeWebSocketConnection(ws, code, reason2, reasonByteLength) {
       if (isClosing(ws) || isClosed(ws)) {
       } else if (!isEstablished(ws)) {
         failWebsocketConnection(ws, "Connection was closed before it was established.");
@@ -17283,13 +17283,13 @@ var require_connection = __commonJS({
       } else if (ws[kSentClose] === sentCloseFrameState.NOT_SENT) {
         ws[kSentClose] = sentCloseFrameState.PROCESSING;
         const frame = new WebsocketFrameSend();
-        if (code !== void 0 && reason === void 0) {
+        if (code !== void 0 && reason2 === void 0) {
           frame.frameData = Buffer.allocUnsafe(2);
           frame.frameData.writeUInt16BE(code, 0);
-        } else if (code !== void 0 && reason !== void 0) {
+        } else if (code !== void 0 && reason2 !== void 0) {
           frame.frameData = Buffer.allocUnsafe(2 + reasonByteLength);
           frame.frameData.writeUInt16BE(code, 0);
-          frame.frameData.write(reason, 2, "utf-8");
+          frame.frameData.write(reason2, 2, "utf-8");
         } else {
           frame.frameData = emptyBuffer;
         }
@@ -17314,11 +17314,11 @@ var require_connection = __commonJS({
       response.socket.off("error", onSocketError);
       const wasClean = ws[kSentClose] === sentCloseFrameState.SENT && ws[kReceivedClose];
       let code = 1005;
-      let reason = "";
+      let reason2 = "";
       const result = ws[kByteParser].closingInfo;
       if (result && !result.error) {
         code = result.code ?? 1005;
-        reason = result.reason;
+        reason2 = result.reason;
       } else if (!ws[kReceivedClose]) {
         code = 1006;
       }
@@ -17326,13 +17326,13 @@ var require_connection = __commonJS({
       fireEvent("close", ws, (type, init) => new CloseEvent(type, init), {
         wasClean,
         code,
-        reason
+        reason: reason2
       });
       if (channels.close.hasSubscribers) {
         channels.close.publish({
           websocket: ws,
           code,
-          reason
+          reason: reason2
         });
       }
     }
@@ -17456,9 +17456,9 @@ var require_receiver = __commonJS({
     var { closeWebSocketConnection } = require_connection();
     var { PerMessageDeflate } = require_permessage_deflate();
     var { MessageSizeExceededError } = require_errors();
-    function failWebsocketConnectionWithCode(ws, code, reason) {
-      closeWebSocketConnection(ws, code, reason, Buffer.byteLength(reason));
-      failWebsocketConnection(ws, reason);
+    function failWebsocketConnectionWithCode(ws, code, reason2) {
+      closeWebSocketConnection(ws, code, reason2, Buffer.byteLength(reason2));
+      failWebsocketConnection(ws, reason2);
     }
     var ByteParser = class extends Writable {
       #buffers = [];
@@ -17738,16 +17738,16 @@ var require_receiver = __commonJS({
         if (code !== void 0 && !isValidStatusCode(code)) {
           return { code: 1002, reason: "Invalid status code", error: true };
         }
-        let reason = data.subarray(2);
-        if (reason[0] === 239 && reason[1] === 187 && reason[2] === 191) {
-          reason = reason.subarray(3);
+        let reason2 = data.subarray(2);
+        if (reason2[0] === 239 && reason2[1] === 187 && reason2[2] === 191) {
+          reason2 = reason2.subarray(3);
         }
         try {
-          reason = utf8Decode(reason);
+          reason2 = utf8Decode(reason2);
         } catch {
           return { code: 1007, reason: "Invalid UTF-8", error: true };
         }
-        return { code, reason, error: false };
+        return { code, reason: reason2, error: false };
       }
       /**
        * Parses control frames.
@@ -17762,9 +17762,9 @@ var require_receiver = __commonJS({
           }
           this.#info.closeInfo = this.parseCloseBody(body);
           if (this.#info.closeInfo.error) {
-            const { code, reason } = this.#info.closeInfo;
-            closeWebSocketConnection(this.ws, code, reason, reason.length);
-            failWebsocketConnection(this.ws, reason);
+            const { code, reason: reason2 } = this.#info.closeInfo;
+            closeWebSocketConnection(this.ws, code, reason2, reason2.length);
+            failWebsocketConnection(this.ws, reason2);
             return false;
           }
           if (this.ws[kSentClose] !== sentCloseFrameState.SENT) {
@@ -18001,14 +18001,14 @@ var require_websocket = __commonJS({
        * @param {number|undefined} code
        * @param {string|undefined} reason
        */
-      close(code = void 0, reason = void 0) {
+      close(code = void 0, reason2 = void 0) {
         webidl.brandCheck(this, _WebSocket);
         const prefix = "WebSocket.close";
         if (code !== void 0) {
           code = webidl.converters["unsigned short"](code, prefix, "code", { clamp: true });
         }
-        if (reason !== void 0) {
-          reason = webidl.converters.USVString(reason, prefix, "reason");
+        if (reason2 !== void 0) {
+          reason2 = webidl.converters.USVString(reason2, prefix, "reason");
         }
         if (code !== void 0) {
           if (code !== 1e3 && (code < 3e3 || code > 4999)) {
@@ -18016,8 +18016,8 @@ var require_websocket = __commonJS({
           }
         }
         let reasonByteLength = 0;
-        if (reason !== void 0) {
-          reasonByteLength = Buffer.byteLength(reason);
+        if (reason2 !== void 0) {
+          reasonByteLength = Buffer.byteLength(reason2);
           if (reasonByteLength > 123) {
             throw new DOMException(
               `Reason must be less than 123 bytes; received ${reasonByteLength}`,
@@ -18025,7 +18025,7 @@ var require_websocket = __commonJS({
             );
           }
         }
-        closeWebSocketConnection(this, code, reason, reasonByteLength);
+        closeWebSocketConnection(this, code, reason2, reasonByteLength);
       }
       /**
        * @see https://websockets.spec.whatwg.org/#dom-websocket-send
@@ -23020,16 +23020,16 @@ ${prettyStateOverride(stateOverride)}`;
         let cause;
         let decodedData;
         let metaMessages;
-        let reason;
+        let reason2;
         if (data && data !== "0x") {
           try {
             decodedData = decodeErrorResult({ abi: abi2, data, cause: error63 });
             const { abiItem, errorName, args: errorArgs } = decodedData;
             if (errorName === "Error") {
-              reason = errorArgs[0];
+              reason2 = errorArgs[0];
             } else if (errorName === "Panic") {
               const [firstArg] = errorArgs;
-              reason = panicReasons[firstArg];
+              reason2 = panicReasons[firstArg];
             } else {
               const errorWithParams = abiItem ? formatAbiItem2(abiItem, { includeName: true }) : void 0;
               const formattedArgs = abiItem && errorArgs ? formatAbiItemWithArgs({
@@ -23047,7 +23047,7 @@ ${prettyStateOverride(stateOverride)}`;
             cause = err;
           }
         } else if (message)
-          reason = message;
+          reason2 = message;
         let signature;
         if (cause instanceof AbiErrorSignatureNotFoundError) {
           signature = cause.signature;
@@ -23057,9 +23057,9 @@ ${prettyStateOverride(stateOverride)}`;
             `You can look up the decoded signature here: https://4byte.sourcify.dev/?q=${signature}.`
           ];
         }
-        super(reason && reason !== "execution reverted" || signature ? [
+        super(reason2 && reason2 !== "execution reverted" || signature ? [
           `The contract function "${functionName}" reverted with the following ${signature ? "signature" : "reason"}:`,
-          reason || signature
+          reason2 || signature
         ].join("\n") : `The contract function "${functionName}" reverted.`, {
           cause: cause ?? error63,
           metaMessages,
@@ -23091,7 +23091,7 @@ ${prettyStateOverride(stateOverride)}`;
         });
         this.data = decodedData;
         this.raw = data;
-        this.reason = reason;
+        this.reason = reason2;
         this.signature = signature;
       }
     };
@@ -26237,8 +26237,8 @@ var init_node = __esm({
     init_base();
     ExecutionRevertedError = class extends BaseError2 {
       constructor({ cause, message } = {}) {
-        const reason = message?.replace("execution reverted: ", "")?.replace("execution reverted", "");
-        super(`Execution reverted ${reason ? `with reason: ${reason}` : "for an unknown reason"}.`, {
+        const reason2 = message?.replace("execution reverted: ", "")?.replace("execution reverted", "");
+        super(`Execution reverted ${reason2 ? `with reason: ${reason2}` : "for an unknown reason"}.`, {
           cause,
           name: "ExecutionRevertedError"
         });
@@ -29710,17 +29710,6 @@ function getInput(name, options) {
   }
   return val.trim();
 }
-function getBooleanInput(name, options) {
-  const trueValue = ["true", "True", "TRUE"];
-  const falseValue = ["false", "False", "FALSE"];
-  const val = getInput(name, options);
-  if (trueValue.includes(val))
-    return true;
-  if (falseValue.includes(val))
-    return false;
-  throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}
-Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
-}
 function setOutput(name, value) {
   const filePath = process.env["GITHUB_OUTPUT"] || "";
   if (filePath) {
@@ -32548,8 +32537,8 @@ var EnsAvatarInvalidMetadataError = class extends BaseError2 {
   }
 };
 var EnsAvatarInvalidNftUriError = class extends BaseError2 {
-  constructor({ reason }) {
-    super(`ENS NFT avatar URI is invalid. ${reason}`, {
+  constructor({ reason: reason2 }) {
+    super(`ENS NFT avatar URI is invalid. ${reason2}`, {
       name: "EnsAvatarInvalidNftUriError"
     });
   }
@@ -38914,7 +38903,8 @@ function privateKeyToAccount(privateKey, options = {}) {
 }
 
 // src/brief.ts
-var LIMITS = { title: 120, brief: 32e3, level: 200 };
+var LIMITS = { title: 120, brief: 32e3 };
+var MAX_BYTES = 63e3;
 var LEVELS = [
   "Names real defects in the diff with file, line and a concrete fix, or correctly finds none, and invents nothing",
   "Accurate and useful: at least one real point about the diff, nothing invented, though it may miss a defect",
@@ -39018,26 +39008,40 @@ function buildBrief(pr, diff2, sources) {
     ...skipped.length ? [`Not shown (lockfiles, generated and binary files): ${cut(skipped.map(printable).join(", "), 200)}`] : [],
     ""
   ].join("\n");
+  const title = cut(`Review PR #${pr.number}: ${pr.title}`, LIMITS.title);
   const open3 = "```diff\n";
   const close = "\n```";
   const note = (shown2, total) => `
 The diff is cut at ${shown2.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} characters. Review only what is shown.`;
+  const wrap3 = (shown2, total) => `${head}${open3}${shown2}${close}${total === void 0 ? "" : note(shown2.length, total)}`;
+  const small = (brief2) => Buffer.byteLength(JSON.stringify({ title, brief: brief2, levels: LEVELS })) <= MAX_BYTES;
   const room = LIMITS.brief - head.length - open3.length - close.length;
   const lines = new Map([...sources ?? []].map(([path, text]) => [path, text.replace(/\n$/, "").split("\n")]));
   const bodies = CONTEXT.map((n) => kept.map((f) => compact(f, n, lines.get(f.path))).join("\n\n"));
-  const fit = bodies.findIndex((b) => b.length <= room);
+  const fit = bodies.findIndex((b) => b.length <= room && small(wrap3(b)));
   const body = bodies.at(fit);
   let shown = body;
-  let truncated = false;
-  if (body.length > room) {
-    truncated = true;
-    const budget = room - note(body.length, body.length).length;
-    const slice4 = body.slice(0, Math.max(0, budget));
-    shown = slice4.slice(0, Math.max(0, slice4.lastIndexOf("\n")));
+  const truncated = fit === -1;
+  if (truncated) {
+    const budget = Math.max(0, room - note(body.length, body.length).length);
+    const upTo = (n) => {
+      const slice4 = body.slice(0, n);
+      return slice4.slice(0, Math.max(0, slice4.lastIndexOf("\n")));
+    };
+    const fits = (n) => small(wrap3(upTo(n), body.length));
+    let lo = 0;
+    let hi = budget;
+    if (fits(hi)) lo = hi;
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (fits(mid)) lo = mid;
+      else hi = mid;
+    }
+    shown = upTo(lo);
   }
-  const brief = body.length === 0 ? `${head}The diff has no reviewable changes.` : `${head}${open3}${shown}${close}${truncated ? note(shown.length, body.length) : ""}`;
+  const brief = body.length === 0 ? `${head}The diff has no reviewable changes.` : wrap3(shown, truncated ? body.length : void 0);
   return {
-    title: cut(`Review PR #${pr.number}: ${pr.title}`, LIMITS.title),
+    title,
     brief,
     levels: LEVELS,
     skipped,
@@ -61065,8 +61069,9 @@ function amount(value) {
 
 // src/desk.ts
 var MAX_TIMEOUT_SECONDS = 600;
+var REQUEST_TIMEOUT = 12e4;
 var same = (a, b) => a.toLowerCase() === b.toLowerCase();
-async function post(preset2, account, maxPrice, brief, record2, fetchImpl = fetch) {
+async function post(preset2, account, maxPrice, brief, record2, fetchImpl = fetch, timeout = REQUEST_TIMEOUT) {
   let signed;
   let unrecorded;
   let price = maxPrice;
@@ -61094,7 +61099,7 @@ async function post(preset2, account, maxPrice, brief, record2, fetchImpl = fetc
         throw error64;
       }
     }
-    const reply2 = await fetchImpl(input2, init);
+    const reply2 = await fetchImpl(input2, { ...init, signal: AbortSignal.timeout(timeout) });
     if (reply2.status === 402) asked = challengePrice(reply2, preset2);
     return reply2;
   };
@@ -61103,8 +61108,8 @@ async function post(preset2, account, maxPrice, brief, record2, fetchImpl = fetc
     response = await wrapFetchWithPayment(observed, client)(`${preset2.desk}/x402/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(brief),
-      signal: AbortSignal.timeout(12e4)
+      // Only the fields the desk takes: a wider brief would send the action's own bookkeeping, and count against the desk's byte limit.
+      body: JSON.stringify({ title: brief.title, brief: brief.brief, levels: brief.levels })
     });
   } catch (error64) {
     if (unrecorded) throw unrecorded.error;
@@ -61119,9 +61124,9 @@ async function post(preset2, account, maxPrice, brief, record2, fetchImpl = fetc
   const order = typeof reply.order === "string" && /^0x[0-9a-f]{64}$/.test(reply.order) ? reply.order : void 0;
   if (response.ok && order) return { order, price, uncertain: false };
   if (signed && response.status !== 400 && response.status !== 402) return { order: order ?? orderId(signed), price, uncertain: true };
-  const error63 = typeof reply.error === "string" ? reply.error : void 0;
+  const error63 = typeof reply.error === "string" ? reply.error.trim() : void 0;
   if (response.status === 400 && error63 && /too large to post/i.test(error63)) throw new Error("BrainChain refused the brief as too large to post: over 64,000 bytes as JSON. Nothing was charged.");
-  throw new Error(`${error63 ?? `BrainChain answered ${response.status}.`} Nothing was charged.`);
+  throw new Error(`${error63 ? error63.replace(/(?<![.!?])$/, ".") : `BrainChain answered ${response.status}.`} Nothing was charged.`);
 }
 function priceIn(offer, preset2) {
   const accepts = offer?.accepts;
@@ -61167,7 +61172,9 @@ async function check2(preset2, order, fetchImpl = fetch) {
   if (response.status === 404) return { kind: "waiting", state: "unknown" };
   if (!response.ok) return { kind: "waiting", state: `http ${response.status}` };
   const view = await response.json();
-  const taskId = view.taskId;
+  const id = String(view.taskId ?? "");
+  const taskId = /^\d+$/.test(id) ? id : void 0;
+  const word = (value) => typeof value === "string" && /^[a-z][a-z-]{0,39}$/.test(value) ? value : void 0;
   if (view.state === "failed") return { kind: "failed", reason: "The payment did not settle. Nothing was charged." };
   if (view.state === "refund-failed") return { kind: "refund-failed", ...taskId ? { taskId } : {} };
   if (view.state === "refunding" || view.state === "refunded" || view.task?.accepted === false) return { kind: "rejected", ...taskId ? { taskId } : {} };
@@ -61175,7 +61182,7 @@ async function check2(preset2, order, fetchImpl = fetch) {
     const text = await fetchImpl(view.result, { signal: AbortSignal.timeout(2e4) });
     if (text.ok) return { kind: "accepted", ...taskId ? { taskId } : {}, review: await text.text() };
   }
-  return { kind: "waiting", ...taskId ? { taskId } : {}, state: view.task?.status ?? view.state ?? "unknown" };
+  return { kind: "waiting", ...taskId ? { taskId } : {}, state: word(view.task?.status) ?? word(view.state) ?? "unknown" };
 }
 
 // src/github.ts
@@ -61199,8 +61206,20 @@ async function call2(token, path, init = {}) {
     },
     signal: AbortSignal.timeout(3e4)
   });
-  if (!response.ok) throw new GitHubError(`GitHub answered ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`, response.status);
+  if (!response.ok) {
+    const limited = response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after"));
+    const answer = `GitHub answered ${response.status}${limited ? " (rate limited)" : ""} for ${path}: ${reason(await response.text())}`;
+    throw new GitHubError(response.status === 401 ? `The github-token was rejected: ${answer}` : answer, limited ? 429 : response.status);
+  }
   return response;
+}
+function reason(body) {
+  try {
+    const message = JSON.parse(body)?.message;
+    if (typeof message === "string" && message.trim()) return message.replace(/\s+/g, " ").trim().slice(0, 200);
+  } catch {
+  }
+  return body.replace(/\s+/g, " ").trim().slice(0, 200);
 }
 async function diff(token, repo, number4) {
   try {
@@ -61217,8 +61236,9 @@ async function commenter(token) {
   try {
     const user = await (await call2(token, "/user")).json();
     return typeof user.login === "string" ? user.login : void 0;
-  } catch {
-    return void 0;
+  } catch (error63) {
+    if (error63 instanceof GitHubError && (error63.status === 401 || error63.status === 403)) return void 0;
+    throw error63;
   }
 }
 async function ownComment(token, repo, number4, login, marker) {
@@ -61266,8 +61286,21 @@ var NOT_PARAGRAPH = /^\s*$|^ {0,3}([-*+][ \t]|\d+[.)][ \t]|[>#|<])/;
 var escapeProse = (text) => text.replace(/<!--/g, "&lt;!--").replace(/<(\/?)(details|summary)\b/gi, "&lt;$1$2").replace(/(^|\W)@(?=[A-Za-z0-9])/g, "$1@\u200B").replace(/(^|[^\w&/])#(?=\d)/g, "$1#\u200B");
 var escapeLine = (line) => line.replace(/(`+)(?!`).*?(?<!`)\1(?!`)|[^`]+|`+/g, (part, span) => span ? part : escapeProse(part));
 function neutralize(review) {
-  const long = review.length > MAX_REVIEW;
-  const lines = (long ? review.slice(0, MAX_REVIEW) : review).split("\n");
+  const whole2 = escapeReview(review);
+  if (whole2.length <= MAX_REVIEW) return whole2;
+  let lo = 0;
+  let hi = review.length;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (escapeReview(review.slice(0, mid)).length <= MAX_REVIEW) lo = mid;
+    else hi = mid;
+  }
+  return `${escapeReview(review.slice(0, lo))}
+
+[The review is longer than a comment allows and was cut here.]`;
+}
+function escapeReview(review) {
+  const lines = review.split("\n");
   let fence;
   let paragraph = false;
   for (let i = 0; i < lines.length; i++) {
@@ -61292,7 +61325,6 @@ function neutralize(review) {
     paragraph = !NOT_PARAGRAPH.test(line);
   }
   if (fence) lines.push(fence);
-  if (long) lines.push("", "[The review is longer than a comment allows and was cut here.]");
   return lines.join("\n");
 }
 var RECORD = /^<!-- brainchain commit=([0-9a-f]{7,64})(?: order=(0x[0-9a-f]{64}) price=(\d+))? -->$/;
@@ -61338,7 +61370,7 @@ function reviewComment(preset2, posted, outcome, commit) {
     neutralize(outcome.review.trim()),
     "",
     "---",
-    `<sub>Reviewed through [BrainChain](https://usebrainchain.com). Jev, a decision model from TypeSafe, hired the model and accepted this review, so the model earns ${paid} ${preset2.token}. Paid ${amount(posted.price)} ${preset2.token} on ${preset2.chain}${task}.${commit ? ` Reviewed at ${commit.slice(0, 7)}.` : ""}</sub>`
+    `<sub>Reviewed through [BrainChain](https://usebrainchain.com), which hired the model and accepted this review, so the model earns ${paid} ${preset2.token}. Paid ${amount(posted.price)} ${preset2.token} on ${preset2.chain}${task}.${commit ? ` Reviewed at ${commit.slice(0, 7)}.` : ""}</sub>`
   ].join("\n");
 }
 
@@ -61353,8 +61385,14 @@ function failure2(error63) {
   let cause = error63 instanceof Error ? error63.cause : void 0;
   while (cause instanceof Error && cause.cause instanceof Error) cause = cause.cause;
   if (!(cause instanceof Error)) return message;
-  const reason = cause.message || (cause instanceof AggregateError ? cause.errors.map(String).join("; ") : "");
-  return reason && !message.includes(reason) ? `${message} (${reason})` : message;
+  const reason2 = cause.message || (cause instanceof AggregateError ? cause.errors.map(String).join("; ") : "");
+  return reason2 && !message.includes(reason2) ? `${message} (${reason2})` : message;
+}
+function flag(name) {
+  const value = getInput(name);
+  if (/^true$/i.test(value)) return true;
+  if (!value || /^false$/i.test(value)) return false;
+  throw new Error(`${name} must be true or false, not "${value}".`);
 }
 async function checkFunds(preset2, owner, maxPrice) {
   const reader = createPublicClient({ transport: http(preset2.rpc, { timeout: 15e3, retryCount: 2 }) });
@@ -61371,8 +61409,9 @@ async function checkFunds(preset2, owner, maxPrice) {
   if (!preset2.permit2) return;
   const allowance = await read("Permit2 allowance", reader.readContract({ address: preset2.asset, abi: erc20, functionName: "allowance", args: [owner, PERMIT2] }));
   if (allowance !== void 0 && allowance < maxPrice) {
+    const budget = 20n * maxPrice;
     throw new Error(
-      `The paying wallet ${owner} lets Permit2 spend ${amount(allowance)} ${preset2.token} on ${preset2.chain}, less than max-price ${amount(maxPrice)} ${preset2.token}. From that wallet, call approve(${PERMIT2}, ${maxPrice}) on the ${preset2.token} contract ${preset2.asset} once; ${maxPrice} is ${amount(maxPrice)} ${preset2.token}, and a larger amount covers more reviews. Nothing was charged.`
+      `The paying wallet ${owner} lets Permit2 spend ${amount(allowance)} ${preset2.token} on ${preset2.chain}, less than max-price ${amount(maxPrice)} ${preset2.token}. Each review draws that allowance down, so approve what you plan to spend on reviews: from that wallet, call approve(${PERMIT2}, amount) on the ${preset2.token} contract ${preset2.asset}, with the amount in 6 decimals (${budget} is ${amount(budget)} ${preset2.token}, 20 reviews at max-price). The approval is a transaction, so the wallet needs a little ETH on ${preset2.chain} for gas. Nothing was charged.`
     );
   }
 }
@@ -61380,13 +61419,19 @@ async function run() {
   const started = Date.now();
   const path = process.env.GITHUB_EVENT_PATH;
   const eventName = process.env.GITHUB_EVENT_NAME;
-  const pr = path && (eventName === "pull_request" || eventName === "pull_request_target") ? JSON.parse(readFileSync(path, "utf8")).pull_request : void 0;
+  if (eventName && eventName !== "pull_request" && eventName !== "pull_request_target") {
+    throw new Error(`Started by ${eventName}; this action reviews pull requests (pull_request or pull_request_target).`);
+  }
+  const event = path && eventName ? JSON.parse(readFileSync(path, "utf8")) : void 0;
+  const pr = event?.pull_request;
   if (!pr) throw new Error("Run this action in a GitHub workflow, on pull_request or pull_request_target events.");
+  const reviewBots = flag("review-bots");
+  const reviewPrivate = flag("review-private");
   if (pr.draft) {
     notice("Draft pull request: no review was paid for.");
     return;
   }
-  if (pr.user?.type === "Bot" && !getBooleanInput("review-bots")) {
+  if (pr.user?.type === "Bot" && !reviewBots) {
     notice(`Pull request opened by ${pr.user.login ?? "a bot"}: no review was paid for. Set review-bots to true to review these.`);
     return;
   }
@@ -61395,23 +61440,34 @@ async function run() {
     notice("Pull request from a fork: no review was paid for.");
     return;
   }
+  if (event.repository?.private && !reviewPrivate) {
+    throw new Error(
+      "This repository is private, and BrainChain reviews are public: the pull request's title, description and diff would be published on BrainChain. Set review-private to true to send them anyway. No review was paid for."
+    );
+  }
   const raw = getInput("payer-key").trim();
   if (!raw) {
-    warning(
-      "payer-key is empty: no review was paid for. Check that the secret name in the workflow matches the repository secret. Pull requests opened by Dependabot read Dependabot secrets instead."
-    );
-    return;
+    if (pr.user?.type === "Bot") {
+      warning("payer-key is empty: no review was paid for. Pull requests opened by Dependabot read Dependabot secrets, so add the key there too to review them.");
+      return;
+    }
+    throw new Error("payer-key is empty, so no review was paid for. Check that the repository has the secret and that the workflow names it exactly.");
   }
   setSecret(raw);
-  const key = raw.startsWith("0x") ? raw : `0x${raw}`;
+  const key = `0x${raw.replace(/^0x/i, "")}`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("payer-key must be a private key: 64 hex characters, with or without 0x.");
   setSecret(key);
+  let account;
+  try {
+    account = privateKeyToAccount(key);
+  } catch {
+    throw new Error("payer-key is not a valid private key.");
+  }
   const preset2 = preset(getInput("network") || "mainnet", getInput("pay-on") || "base");
   const maxPrice = units(getInput("max-price") || "1");
   const waitMinutes = Number(getInput("wait-minutes") || "20");
   if (!Number.isFinite(waitMinutes) || waitMinutes < 1 || waitMinutes > 300) throw new Error("wait-minutes must be between 1 and 300.");
   const token = getInput("github-token", { required: true });
-  const account = privateKeyToAccount(key);
   const deadline = started + waitMinutes * 6e4;
   const head = pr.head.sha;
   const short = head.slice(0, 7);
@@ -61431,15 +61487,17 @@ async function run() {
       try {
         return await comment(token, repo, pr.number, body, mine);
       } catch (error63) {
-        if (attempt === ATTEMPTS || !transient(error63)) throw error63;
-        await new Promise((resolve) => setTimeout(resolve, attempt * 2e3));
+        if (!transient(error63)) throw error63;
+        if (attempt < ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, attempt * 2e3));
+        if (!mine) mine = await ownComment(token, repo, pr.number, login, MARKER).catch(() => void 0);
+        if (attempt === ATTEMPTS) throw error63;
       }
     }
   };
   const update = (body) => save(body).catch((error63) => {
     warning(`Could not update the comment on the pull request: ${failure2(error63)}`);
   });
-  const summarize = (text) => summary.addRaw(text, true).write().then(() => true).catch((error63) => {
+  const summarize = (text, overwrite = false) => summary.addRaw(text, true).write({ overwrite }).then(() => true).catch((error63) => {
     warning(`Could not write the job summary: ${failure2(error63)}`);
     return false;
   });
@@ -61454,11 +61512,10 @@ async function run() {
   const recorded = mine?.body ? paidFor(mine.body) : void 0;
   if (recorded?.commit === head) {
     posted = { order: recorded.order, price: recorded.price, uncertain: false };
-    setOutput("order", posted.order);
     info(`This commit was paid for already, as order ${posted.order}. Waiting on that order; nothing more is paid.`);
   } else if (mine?.body && orderless(mine.body) === head) {
     throw new Error(
-      `The comment on the pull request names ${short} but no order: an earlier run wrote it before paying and did not record the order after, so this commit may be paid for already, and this run pays nothing. Find the order id on the "Paid" line of the earlier run's log and follow it at ${preset2.desk}/x402/tasks/<order id>, or delete the comment and re-run the job to pay for a new review.`
+      `The comment on the pull request names ${short} but no order. An earlier run wrote it before paying and recorded no order after it, so this commit may already be paid for. This run pays nothing. Find the order id on the "Paid" line of the earlier run's log and follow it at ${preset2.desk}/x402/tasks/<order id>, or delete the comment and re-run the job to pay for a new review.`
     );
   } else {
     const text = await diff(token, repo, pr.number);
@@ -61485,17 +61542,17 @@ async function run() {
       const texts = await Promise.all(brief.files.map((file2) => fileAt(token, repo, file2, head)));
       brief = buildBrief(about, text, new Map(brief.files.flatMap((file2, i) => texts[i] === void 0 ? [] : [[file2, texts[i]]])));
     }
-    if (brief.skipped.length) info(`Left out of the brief: ${brief.skipped.join(", ")}`);
+    if (brief.skipped.length) info(`Left out of the brief: ${brief.skipped.map(printable).join(", ")}`);
     if (brief.truncated) warning("The diff is longer than a BrainChain brief allows, so the review covers its first part only.");
     const asked = await quote(preset2);
     if (asked !== void 0 && asked > maxPrice) throw new Error(`${overPrice(preset2, asked, maxPrice)} Nothing was charged.`);
     await checkFunds(preset2, account.address, maxPrice);
     restore = mine?.body;
     let checkpoint;
-    const record2 = async ({ order: order2, price }) => {
-      mine = await save(keep(`BrainChain is reviewing ${short}.`, { order: order2, commit: head, price })).catch((error63) => {
+    const record2 = async ({ order: order2, price: price2 }) => {
+      mine = await save(keep(`BrainChain is reviewing ${short}.`, { order: order2, commit: head, price: price2 })).catch((error63) => {
         throw new Error(
-          error63 instanceof GitHubError && [401, 403, 404].includes(error63.status) ? `Could not comment on the pull request, so no review was paid for. The github-token needs pull-requests: write. ${failure2(error63)}` : `GitHub did not save the comment that records the order, so the payment was not sent and no review was paid for. Re-run the job once GitHub accepts comments. ${failure2(error63)}`
+          error63 instanceof GitHubError && [401, 403, 404].includes(error63.status) ? `Could not comment on the pull request, so no review was paid for.${error63.status === 401 ? "" : " The github-token needs pull-requests: write."} ${failure2(error63)}` : `GitHub did not save the comment that records the order, so the payment was not sent and no review was paid for. Re-run the job once GitHub accepts comments. ${failure2(error63)}`
         );
       });
       checkpoint = order2;
@@ -61506,19 +61563,22 @@ async function run() {
       await undo();
       throw error63;
     }
-    setOutput("order", posted.order);
-    const spent = `Paid ${amount(posted.price)} ${preset2.token} on ${preset2.chain}`;
-    await summarize(`${spent} for the review of ${short}: order \`${posted.order}\`.`);
-    info(`${spent}. Order ${posted.order}${posted.uncertain ? " (the confirmation was lost; waiting on that order)" : ""}.`);
+    const price = `${amount(posted.price)} ${preset2.token} on ${preset2.chain}`;
+    const sent = `${posted.uncertain ? "Signed" : "Sent"} a payment of ${price}`;
+    await summarize(
+      posted.uncertain ? `${sent} for the review of ${short}, but BrainChain's confirmation was lost: order \`${posted.order}\`.` : `${sent} for the review of ${short}: order \`${posted.order}\`.`
+    );
+    info(`${sent}. Order ${posted.order}${posted.uncertain ? " (the confirmation was lost; waiting on that order)" : ""}.`);
     const reviewing = keep(
-      `BrainChain is reviewing ${short} (order \`${posted.order}\`). The review replaces this comment if Jev accepts it; if not, the payment will be refunded.`,
+      `BrainChain is reviewing ${short} (order \`${posted.order}\`). The review replaces this comment if BrainChain accepts it; if not, the payment will be refunded.`,
       { order: posted.order, commit: head, price: posted.price }
     );
     const order = posted.order;
     mine = await save(reviewing).catch((error63) => {
       if (checkpoint !== order) {
+        setOutput("order", order);
         throw new Error(
-          `${spent} as order ${order}, but the comment on the pull request could not record it: ${failure2(error63)}. The order keeps running at ${preset2.desk}/x402/tasks/${order}; write to hello@usebrainchain.com with the order id if its review does not arrive.`
+          `${sent} as order ${order}, but the comment on the pull request could not record it: ${failure2(error63)}. The order keeps running at ${preset2.desk}/x402/tasks/${order}; write to hello@usebrainchain.com with the order id if its review does not arrive.`
         );
       }
       warning(`Could not update the comment on the pull request: ${failure2(error63)}. It records order ${order} already, so a re-run follows that order and pays nothing more.`);
@@ -61548,6 +61608,7 @@ async function run() {
       last = outcome.state;
     }
   }
+  if (outcome.kind !== "failed") setOutput("order", posted.order);
   if ("taskId" in outcome && outcome.taskId) setOutput("task-id", outcome.taskId);
   const paid = { order: posted.order, commit: head, price: posted.price };
   const latest = await ownComment(token, repo, pr.number, login, MARKER).catch((error63) => {
@@ -61566,7 +61627,7 @@ async function run() {
         notice(`The pull request moved on to ${newer.slice(0, 7)} while this review ran, so the review of ${short} is kept in this job's summary and the comment is left to the newer commit.`);
         return;
       }
-      const url2 = await comment(token, repo, pr.number, body, mine).then(
+      const url2 = await save(body).then(
         (posting) => posting.html_url,
         (error63) => {
           if (summarized) setOutput("accepted", "true");
@@ -61578,27 +61639,36 @@ async function run() {
       return;
     }
     case "rejected":
-      if (!superseded) await update(keep(`Jev did not accept the review of ${short}, so it is not posted and the payment is being refunded.`, paid, "is below"));
+      if (!superseded) {
+        await update(
+          keep(
+            `BrainChain did not accept the review of ${short}, so it is not posted and the payment is being refunded. For a new review, delete this comment and re-run the job, or push a new commit if the workflow reviews each push.`,
+            paid,
+            "is below"
+          )
+        );
+      }
       setOutput("accepted", "false");
-      notice(`Jev did not accept the review, so it is not posted and the ${amount(posted.price)} ${preset2.token} is being refunded to ${account.address} on ${preset2.chain}.`);
+      notice(`BrainChain did not accept the review, so it is not posted and the ${amount(posted.price)} ${preset2.token} is being refunded to ${account.address} on ${preset2.chain}.`);
       return;
     case "refund-failed":
-      if (!superseded) await update(keep(`Jev did not accept the review of ${short}. The refund could not be sent automatically, and BrainChain has been alerted.`, paid, "is below"));
+      if (!superseded) await update(keep(`BrainChain did not accept the review of ${short}. The refund could not be sent automatically, and BrainChain has been alerted.`, paid, "is below"));
       setOutput("accepted", "false");
-      throw new Error(`Jev did not accept the review, and the refund to ${account.address} could not be sent automatically. BrainChain has been alerted; write to hello@usebrainchain.com with order ${posted.order}.`);
+      throw new Error(`BrainChain did not accept the review, and the refund to ${account.address} could not be sent automatically. BrainChain has been alerted; write to hello@usebrainchain.com with order ${posted.order}.`);
     case "failed":
+      await summarize(`The payment of ${amount(posted.price)} ${preset2.token} on ${preset2.chain} for the review of ${short} did not settle, so nothing was charged.`, true);
       if (!superseded) await undo();
       throw new Error(outcome.reason);
     case "waiting":
       if (outcome.state === "unknown") {
-        warning(
-          `BrainChain has no record of order ${posted.order}. If ${account.address} shows a payment for it, write to hello@usebrainchain.com with the order id. If it shows none ten minutes after the payment was signed, nothing was charged: delete the comment on the pull request and re-run the job.`
-        );
-        return;
+        const lost = posted.uncertain ? ", but its confirmation was lost," : "";
+        const advice = (where) => `Look up ${account.address} in a ${preset2.chain} block explorer. If its ${preset2.token} transfers show the payment, write to hello@usebrainchain.com with the order id. If they show none ten minutes after the payment was signed, nothing was charged: delete ${where} and re-run the job.`;
+        if (!superseded) await update(keep(`The payment for the review of ${short} was signed as order \`${posted.order}\`${lost} and BrainChain has no record of it. ${advice("this comment")}`, paid));
+        throw new Error(`The payment was signed as order ${posted.order}${lost} and BrainChain has no record of it. ${advice("the comment on the pull request")}`);
       }
-      if (!superseded) await update(keep(`The review of ${short} is taking longer than this job waits for it. Re-running the job posts it once Jev accepts it, without paying again.`, paid));
+      if (!superseded) await update(keep(`The review of ${short} is taking longer than this job waits for it. Re-running the job posts it once BrainChain accepts it, without paying again.`, paid));
       warning(
-        `No graded review within ${minutes(waitMinutes)} of the job starting, so none is posted yet. The order keeps running, and re-running this job posts the review once Jev accepts it, without paying again: ${preset2.desk}/x402/tasks/${posted.order}`
+        `No graded review within ${minutes(waitMinutes)} of the job starting, so none is posted yet. The order keeps running, and re-running this job posts the review once BrainChain accepts it, without paying again: ${preset2.desk}/x402/tasks/${posted.order}`
       );
   }
 }

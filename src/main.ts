@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 
 import * as core from "@actions/core";
-import { createPublicClient, http, parseAbi } from "viem";
+import { createPublicClient, http, parseAbi, type PrivateKeyAccount } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { buildBrief } from "./brief.js";
+import { buildBrief, printable } from "./brief.js";
 import { check, overPrice, post, quote, type Outcome, type Posted } from "./desk.js";
 import { comment, commenter, diff, fileAt, GitHubError, ownComment, pullRequest, remove, type IssueComment } from "./github.js";
 import { amount, PERMIT2, preset as presetFor, units, type Preset } from "./presets.js";
@@ -20,6 +20,7 @@ interface PullRequestEvent {
     head: { sha: string; repo: { full_name: string } | null };
     base: { repo: { full_name: string } };
   };
+  repository?: { private?: boolean };
 }
 
 const erc20 = parseAbi(["function balanceOf(address) view returns (uint256)", "function allowance(address, address) view returns (uint256)"]);
@@ -27,7 +28,7 @@ const erc20 = parseAbi(["function balanceOf(address) view returns (uint256)", "f
 const MAX_SOURCES = 20;
 
 const minutes = (n: number) => `${n} minute${n === 1 ? "" : "s"}`;
-/** Tries at writing the comment when GitHub fails or does not answer. */
+/** Times a comment write is tried when GitHub fails or does not answer. */
 const ATTEMPTS = 3;
 const transient = (error: unknown) => !(error instanceof GitHubError) || error.status >= 500 || error.status === 429;
 
@@ -39,6 +40,14 @@ export function failure(error: unknown): string {
   if (!(cause instanceof Error)) return message;
   const reason = cause.message || (cause instanceof AggregateError ? cause.errors.map(String).join("; ") : "");
   return reason && !message.includes(reason) ? `${message} (${reason})` : message;
+}
+
+/** core.getBooleanInput answers "yes" with a YAML schema error that does not say what to write instead. */
+function flag(name: string): boolean {
+  const value = core.getInput(name);
+  if (/^true$/i.test(value)) return true;
+  if (!value || /^false$/i.test(value)) return false;
+  throw new Error(`${name} must be true or false, not "${value}".`);
 }
 
 /** A read that fails only warns: BrainChain refuses a payment the wallet cannot cover before it settles. */
@@ -58,24 +67,31 @@ async function checkFunds(preset: Preset, owner: `0x${string}`, maxPrice: bigint
   if (!preset.permit2) return;
   const allowance = await read("Permit2 allowance", reader.readContract({ address: preset.asset, abi: erc20, functionName: "allowance", args: [owner, PERMIT2] }));
   if (allowance !== undefined && allowance < maxPrice) {
+    const budget = 20n * maxPrice;
     throw new Error(
-      `The paying wallet ${owner} lets Permit2 spend ${amount(allowance)} ${preset.token} on ${preset.chain}, less than max-price ${amount(maxPrice)} ${preset.token}. From that wallet, call approve(${PERMIT2}, ${maxPrice}) on the ${preset.token} contract ${preset.asset} once; ${maxPrice} is ${amount(maxPrice)} ${preset.token}, and a larger amount covers more reviews. Nothing was charged.`,
+      `The paying wallet ${owner} lets Permit2 spend ${amount(allowance)} ${preset.token} on ${preset.chain}, less than max-price ${amount(maxPrice)} ${preset.token}. Each review draws that allowance down, so approve what you plan to spend on reviews: from that wallet, call approve(${PERMIT2}, amount) on the ${preset.token} contract ${preset.asset}, with the amount in 6 decimals (${budget} is ${amount(budget)} ${preset.token}, 20 reviews at max-price). The approval is a transaction, so the wallet needs a little ETH on ${preset.chain} for gas. Nothing was charged.`,
     );
   }
 }
 
 export async function run(): Promise<void> {
-  // wait-minutes counts from here, so paying and posting are inside it.
+  // wait-minutes counts from here: the time spent paying is part of it, posting the review is not.
   const started = Date.now();
   const path = process.env.GITHUB_EVENT_PATH;
   const eventName = process.env.GITHUB_EVENT_NAME;
-  const pr = path && (eventName === "pull_request" || eventName === "pull_request_target") ? (JSON.parse(readFileSync(path, "utf8")) as PullRequestEvent).pull_request : undefined;
+  if (eventName && eventName !== "pull_request" && eventName !== "pull_request_target") {
+    throw new Error(`Started by ${eventName}; this action reviews pull requests (pull_request or pull_request_target).`);
+  }
+  const event = path && eventName ? (JSON.parse(readFileSync(path, "utf8")) as PullRequestEvent) : undefined;
+  const pr = event?.pull_request;
   if (!pr) throw new Error("Run this action in a GitHub workflow, on pull_request or pull_request_target events.");
+  const reviewBots = flag("review-bots");
+  const reviewPrivate = flag("review-private");
   if (pr.draft) {
     core.notice("Draft pull request: no review was paid for.");
     return;
   }
-  if (pr.user?.type === "Bot" && !core.getBooleanInput("review-bots")) {
+  if (pr.user?.type === "Bot" && !reviewBots) {
     core.notice(`Pull request opened by ${pr.user.login ?? "a bot"}: no review was paid for. Set review-bots to true to review these.`);
     return;
   }
@@ -86,24 +102,38 @@ export async function run(): Promise<void> {
     core.notice("Pull request from a fork: no review was paid for.");
     return;
   }
+  // BrainChain publishes every task with its brief, which holds the diff.
+  if (event.repository?.private && !reviewPrivate) {
+    throw new Error(
+      "This repository is private, and BrainChain reviews are public: the pull request's title, description and diff would be published on BrainChain. Set review-private to true to send them anyway. No review was paid for.",
+    );
+  }
   const raw = core.getInput("payer-key").trim();
   if (!raw) {
-    core.warning(
-      "payer-key is empty: no review was paid for. Check that the secret name in the workflow matches the repository secret. Pull requests opened by Dependabot read Dependabot secrets instead.",
-    );
-    return;
+    // A bot's pull request reads Dependabot secrets, which may not hold the key.
+    if (pr.user?.type === "Bot") {
+      core.warning("payer-key is empty: no review was paid for. Pull requests opened by Dependabot read Dependabot secrets, so add the key there too to review them.");
+      return;
+    }
+    throw new Error("payer-key is empty, so no review was paid for. Check that the repository has the secret and that the workflow names it exactly.");
   }
   core.setSecret(raw);
-  const key = raw.startsWith("0x") ? raw : `0x${raw}`;
+  const key = `0x${raw.replace(/^0x/i, "")}`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(key)) throw new Error("payer-key must be a private key: 64 hex characters, with or without 0x.");
   core.setSecret(key);
+  let account: PrivateKeyAccount;
+  try {
+    account = privateKeyToAccount(key as `0x${string}`);
+  } catch {
+    // viem's error prints the key as a decimal number, which masking its hex form does not hide.
+    throw new Error("payer-key is not a valid private key.");
+  }
 
   const preset = presetFor(core.getInput("network") || "mainnet", core.getInput("pay-on") || "base");
   const maxPrice = units(core.getInput("max-price") || "1");
   const waitMinutes = Number(core.getInput("wait-minutes") || "20");
   if (!Number.isFinite(waitMinutes) || waitMinutes < 1 || waitMinutes > 300) throw new Error("wait-minutes must be between 1 and 300.");
   const token = core.getInput("github-token", { required: true });
-  const account = privateKeyToAccount(key as `0x${string}`);
   const deadline = started + waitMinutes * 60_000;
   const head = pr.head.sha;
   const short = head.slice(0, 7);
@@ -124,14 +154,18 @@ export async function run(): Promise<void> {
   const earlier = mine?.body ? shownReview(mine.body) : undefined;
   const keep = (text: string, record: { commit: string } | Paid, below = "stays below until the new one is accepted") =>
     statusComment(earlier ? `${text} The review of ${reviewedCommit(earlier)} ${below}.` : text, record, earlier);
-  // The comment is where the order is kept, so a write GitHub fails or does not answer is tried again.
+  // The order lives in the comment: retry a write GitHub fails or does not answer.
   const save = async (body: string): Promise<IssueComment> => {
     for (let attempt = 1; ; attempt++) {
       try {
         return await comment(token, repo, pr.number, body, mine);
       } catch (error) {
-        if (attempt === ATTEMPTS || !transient(error)) throw error;
-        await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+        if (!transient(error)) throw error;
+        if (attempt < ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+        // GitHub may have saved a new comment without answering. Taking it up makes the retry edit it instead of
+        // posting a second, and lets undo() remove it when the payment is not sent.
+        if (!mine) mine = await ownComment(token, repo, pr.number, login, MARKER).catch(() => undefined);
+        if (attempt === ATTEMPTS) throw error;
       }
     }
   };
@@ -139,10 +173,10 @@ export async function run(): Promise<void> {
     save(body).catch((error: unknown) => {
       core.warning(`Could not update the comment on the pull request: ${failure(error)}`);
     });
-  const summarize = (text: string) =>
+  const summarize = (text: string, overwrite = false) =>
     core.summary
       .addRaw(text, true)
-      .write()
+      .write({ overwrite })
       .then(() => true)
       .catch((error: unknown) => {
         core.warning(`Could not write the job summary: ${failure(error)}`);
@@ -161,12 +195,11 @@ export async function run(): Promise<void> {
   const recorded = mine?.body ? paidFor(mine.body) : undefined;
   if (recorded?.commit === head) {
     posted = { order: recorded.order, price: recorded.price, uncertain: false };
-    core.setOutput("order", posted.order);
     core.info(`This commit was paid for already, as order ${posted.order}. Waiting on that order; nothing more is paid.`);
   } else if (mine?.body && orderless(mine.body) === head) {
-    // Runs before 1.4.4 named the commit before paying and the order only after, so this one may hide a payment.
+    // Runs before 1.4.4 named the commit before paying and the order only after. This comment may hide a payment.
     throw new Error(
-      `The comment on the pull request names ${short} but no order: an earlier run wrote it before paying and did not record the order after, so this commit may be paid for already, and this run pays nothing. Find the order id on the "Paid" line of the earlier run's log and follow it at ${preset.desk}/x402/tasks/<order id>, or delete the comment and re-run the job to pay for a new review.`,
+      `The comment on the pull request names ${short} but no order. An earlier run wrote it before paying and recorded no order after it, so this commit may already be paid for. This run pays nothing. Find the order id on the "Paid" line of the earlier run's log and follow it at ${preset.desk}/x402/tasks/<order id>, or delete the comment and re-run the job to pay for a new review.`,
     );
   } else {
     const text = await diff(token, repo, pr.number);
@@ -194,7 +227,8 @@ export async function run(): Promise<void> {
       const texts = await Promise.all(brief.files.map((file) => fileAt(token, repo, file, head)));
       brief = buildBrief(about, text, new Map(brief.files.flatMap((file, i) => (texts[i] === undefined ? [] : [[file, texts[i]!] as [string, string]]))));
     }
-    if (brief.skipped.length) core.info(`Left out of the brief: ${brief.skipped.join(", ")}`);
+    // core.info writes text as it is, and a line break in a path would start a line the runner reads as a workflow command.
+    if (brief.skipped.length) core.info(`Left out of the brief: ${brief.skipped.map(printable).join(", ")}`);
     if (brief.truncated) core.warning("The diff is longer than a BrainChain brief allows, so the review covers its first part only.");
 
     // Refused before the status comment, so a wrong max-price does not notify the pull request's subscribers.
@@ -210,7 +244,7 @@ export async function run(): Promise<void> {
       mine = await save(keep(`BrainChain is reviewing ${short}.`, { order, commit: head, price })).catch((error: unknown) => {
         throw new Error(
           error instanceof GitHubError && [401, 403, 404].includes(error.status)
-            ? `Could not comment on the pull request, so no review was paid for. The github-token needs pull-requests: write. ${failure(error)}`
+            ? `Could not comment on the pull request, so no review was paid for.${error.status === 401 ? "" : " The github-token needs pull-requests: write."} ${failure(error)}`
             : `GitHub did not save the comment that records the order, so the payment was not sent and no review was paid for. Re-run the job once GitHub accepts comments. ${failure(error)}`,
         );
       });
@@ -222,21 +256,27 @@ export async function run(): Promise<void> {
       await undo();
       throw error;
     }
-    core.setOutput("order", posted.order);
-    const spent = `Paid ${amount(posted.price)} ${preset.token} on ${preset.chain}`;
+    const price = `${amount(posted.price)} ${preset.token} on ${preset.chain}`;
+    // Not "Paid": the desk settles the payment later and reports it while the order is followed.
+    const sent = `${posted.uncertain ? "Signed" : "Sent"} a payment of ${price}`;
     // The job summary keeps the order even if the comment cannot be written again.
-    await summarize(`${spent} for the review of ${short}: order \`${posted.order}\`.`);
-    core.info(`${spent}. Order ${posted.order}${posted.uncertain ? " (the confirmation was lost; waiting on that order)" : ""}.`);
+    await summarize(
+      posted.uncertain
+        ? `${sent} for the review of ${short}, but BrainChain's confirmation was lost: order \`${posted.order}\`.`
+        : `${sent} for the review of ${short}: order \`${posted.order}\`.`,
+    );
+    core.info(`${sent}. Order ${posted.order}${posted.uncertain ? " (the confirmation was lost; waiting on that order)" : ""}.`);
     const reviewing = keep(
-      `BrainChain is reviewing ${short} (order \`${posted.order}\`). The review replaces this comment if Jev accepts it; if not, the payment will be refunded.`,
+      `BrainChain is reviewing ${short} (order \`${posted.order}\`). The review replaces this comment if BrainChain accepts it; if not, the payment will be refunded.`,
       { order: posted.order, commit: head, price: posted.price },
     );
     const order = posted.order;
     mine = await save(reviewing).catch((error: unknown) => {
-      // The desk names the order the same way the comment does, so this is a safeguard: a re-run must find the order it would follow.
+      // The desk's order normally matches the recorded one. When it does not, a re-run cannot find it, and the job fails naming it.
       if (checkpoint !== order) {
+        core.setOutput("order", order);
         throw new Error(
-          `${spent} as order ${order}, but the comment on the pull request could not record it: ${failure(error)}. The order keeps running at ${preset.desk}/x402/tasks/${order}; write to hello@usebrainchain.com with the order id if its review does not arrive.`,
+          `${sent} as order ${order}, but the comment on the pull request could not record it: ${failure(error)}. The order keeps running at ${preset.desk}/x402/tasks/${order}; write to hello@usebrainchain.com with the order id if its review does not arrive.`,
         );
       }
       core.warning(`Could not update the comment on the pull request: ${failure(error)}. It records order ${order} already, so a re-run follows that order and pays nothing more.`);
@@ -262,12 +302,14 @@ export async function run(): Promise<void> {
     outcome = await check(preset, posted.order).catch((error: unknown): Outcome => ({ kind: "waiting", state: `BrainChain did not answer (${failure(error)}); trying again.` }));
     if (outcome.kind === "waiting" && outcome.state !== last) {
       const task = outcome.taskId ? `Task ${outcome.taskId}` : "The task";
-      // "paid" is also a task status: the model was paid, so the review was accepted.
+      // "paid" is also a task status, meaning the model was paid for an accepted review.
       const step = outcome.taskId && outcome.state === "paid" ? "Jev accepted the review; fetching it." : (progress[outcome.state] ?? outcome.state);
       core.info(outcome.state === "posted" ? `${task} is on BrainChain; Jev is hiring a model.` : outcome.taskId ? `${task}: ${step}` : step);
       last = outcome.state;
     }
   }
+  // A payment that did not settle leaves no order to follow.
+  if (outcome.kind !== "failed") core.setOutput("order", posted.order);
   if ("taskId" in outcome && outcome.taskId) core.setOutput("task-id", outcome.taskId);
 
   const paid = { order: posted.order, commit: head, price: posted.price };
@@ -291,7 +333,7 @@ export async function run(): Promise<void> {
         core.notice(`The pull request moved on to ${newer!.slice(0, 7)} while this review ran, so the review of ${short} is kept in this job's summary and the comment is left to the newer commit.`);
         return;
       }
-      const url = await comment(token, repo, pr.number, body, mine).then(
+      const url = await save(body).then(
         (posting) => posting.html_url,
         (error: unknown) => {
           if (summarized) core.setOutput("accepted", "true");
@@ -303,27 +345,38 @@ export async function run(): Promise<void> {
       return;
     }
     case "rejected":
-      if (!superseded) await update(keep(`Jev did not accept the review of ${short}, so it is not posted and the payment is being refunded.`, paid, "is below"));
+      // A re-run follows the recorded order and only repeats this. The comment says how to start over instead.
+      if (!superseded) {
+        await update(
+          keep(
+            `BrainChain did not accept the review of ${short}, so it is not posted and the payment is being refunded. For a new review, delete this comment and re-run the job, or push a new commit if the workflow reviews each push.`,
+            paid,
+            "is below",
+          ),
+        );
+      }
       core.setOutput("accepted", "false");
-      core.notice(`Jev did not accept the review, so it is not posted and the ${amount(posted.price)} ${preset.token} is being refunded to ${account.address} on ${preset.chain}.`);
+      core.notice(`BrainChain did not accept the review, so it is not posted and the ${amount(posted.price)} ${preset.token} is being refunded to ${account.address} on ${preset.chain}.`);
       return;
     case "refund-failed":
-      if (!superseded) await update(keep(`Jev did not accept the review of ${short}. The refund could not be sent automatically, and BrainChain has been alerted.`, paid, "is below"));
+      if (!superseded) await update(keep(`BrainChain did not accept the review of ${short}. The refund could not be sent automatically, and BrainChain has been alerted.`, paid, "is below"));
       core.setOutput("accepted", "false");
-      throw new Error(`Jev did not accept the review, and the refund to ${account.address} could not be sent automatically. BrainChain has been alerted; write to hello@usebrainchain.com with order ${posted.order}.`);
+      throw new Error(`BrainChain did not accept the review, and the refund to ${account.address} could not be sent automatically. BrainChain has been alerted; write to hello@usebrainchain.com with order ${posted.order}.`);
     case "failed":
+      await summarize(`The payment of ${amount(posted.price)} ${preset.token} on ${preset.chain} for the review of ${short} did not settle, so nothing was charged.`, true);
       if (!superseded) await undo();
       throw new Error(outcome.reason);
     case "waiting":
       if (outcome.state === "unknown") {
-        core.warning(
-          `BrainChain has no record of order ${posted.order}. If ${account.address} shows a payment for it, write to hello@usebrainchain.com with the order id. If it shows none ten minutes after the payment was signed, nothing was charged: delete the comment on the pull request and re-run the job.`,
-        );
-        return;
+        const lost = posted.uncertain ? ", but its confirmation was lost," : "";
+        const advice = (where: string) =>
+          `Look up ${account.address} in a ${preset.chain} block explorer. If its ${preset.token} transfers show the payment, write to hello@usebrainchain.com with the order id. If they show none ten minutes after the payment was signed, nothing was charged: delete ${where} and re-run the job.`;
+        if (!superseded) await update(keep(`The payment for the review of ${short} was signed as order \`${posted.order}\`${lost} and BrainChain has no record of it. ${advice("this comment")}`, paid));
+        throw new Error(`The payment was signed as order ${posted.order}${lost} and BrainChain has no record of it. ${advice("the comment on the pull request")}`);
       }
-      if (!superseded) await update(keep(`The review of ${short} is taking longer than this job waits for it. Re-running the job posts it once Jev accepts it, without paying again.`, paid));
+      if (!superseded) await update(keep(`The review of ${short} is taking longer than this job waits for it. Re-running the job posts it once BrainChain accepts it, without paying again.`, paid));
       core.warning(
-        `No graded review within ${minutes(waitMinutes)} of the job starting, so none is posted yet. The order keeps running, and re-running this job posts the review once Jev accepts it, without paying again: ${preset.desk}/x402/tasks/${posted.order}`,
+        `No graded review within ${minutes(waitMinutes)} of the job starting, so none is posted yet. The order keeps running, and re-running this job posts the review once BrainChain accepts it, without paying again: ${preset.desk}/x402/tasks/${posted.order}`,
       );
   }
 }

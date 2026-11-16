@@ -31,8 +31,22 @@ const escapeLine = (line: string) => line.replace(/(`+)(?!`).*?(?<!`)\1(?!`)|[^`
  * it as text.
  */
 export function neutralize(review: string): string {
-  const long = review.length > MAX_REVIEW;
-  const lines = (long ? review.slice(0, MAX_REVIEW) : review).split("\n");
+  const whole = escapeReview(review);
+  if (whole.length <= MAX_REVIEW) return whole;
+  // Escaping lengthens the text: find the longest cut whose escaped form fits. Each candidate is escaped on its own,
+  // because a cut can leave a code span or fence open. lo always fits.
+  let lo = 0;
+  let hi = review.length;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (escapeReview(review.slice(0, mid)).length <= MAX_REVIEW) lo = mid;
+    else hi = mid;
+  }
+  return `${escapeReview(review.slice(0, lo))}\n\n[The review is longer than a comment allows and was cut here.]`;
+}
+
+function escapeReview(review: string): string {
+  const lines = review.split("\n");
   let fence: string | undefined;
   let paragraph = false;
   for (let i = 0; i < lines.length; i++) {
@@ -58,18 +72,17 @@ export function neutralize(review: string): string {
     paragraph = !NOT_PARAGRAPH.test(line);
   }
   if (fence) lines.push(fence);
-  if (long) lines.push("", "[The review is longer than a comment allows and was cut here.]");
   return lines.join("\n");
 }
 
-/** What was paid for a commit, so a re-run follows the order instead of paying again. */
+/** What was paid for a commit. A re-run follows this order instead of paying again. */
 export interface Paid {
   order: `0x${string}`;
   commit: string;
   price: bigint;
 }
 
-/** The commit a comment is about, and what was paid for it once paid. */
+/** The commit a comment is about, plus the payment once there is one. */
 type Recorded = { commit: string } | Paid;
 
 const RECORD = /^<!-- brainchain commit=([0-9a-f]{7,64})(?: order=(0x[0-9a-f]{64}) price=(\d+))? -->$/;
@@ -77,7 +90,7 @@ const recordLine = (record: Recorded) => `<!-- brainchain commit=${record.commit
 /** Separates a status from the earlier review it keeps on show. */
 const EARLIER = "<!-- brainchain-earlier -->";
 
-/** The record is read only from the line under the marker, so a review that quotes one cannot forge it. */
+/** Read only from the line under the marker: a review that quotes a record cannot forge one. */
 function recordOf(body: string): RegExpExecArray | null {
   const [first, second = ""] = body.split(/\r?\n/, 2);
   return first === MARKER ? RECORD.exec(second) : null;
@@ -91,7 +104,7 @@ export function paidFor(body: string): Paid | undefined {
 /**
  * The commit a record names without an order. Runs before 1.4.4 wrote one
  * before paying and added the order once paid, so it may stand for a payment
- * whose order was lost. Runs since record the order before the payment leaves.
+ * whose order was lost. Later runs record the order before the payment leaves.
  */
 export function orderless(body: string): string | undefined {
   const match = recordOf(body);
@@ -116,7 +129,7 @@ export function statusComment(text: string, record: Recorded, earlier?: string):
 
 /** The accepted review on show, as it was posted: the comment itself, or the review a status keeps below it. */
 export function shownReview(body: string): string | undefined {
-  // The separator is read at its place only, so a review that quotes it is not taken for a status.
+  // Only the separator at its fixed line counts; a review that quotes it is not a status.
   const lines = body.split("\n");
   if (recordOf(body) && lines[4] === EARLIER) return [MARKER, ...lines.slice(5)].join("\n");
   return reviewedCommit(body) ? body : undefined;
@@ -141,6 +154,6 @@ export function reviewComment(preset: Preset, posted: Posted, outcome: Extract<O
     neutralize(outcome.review.trim()),
     "",
     "---",
-    `<sub>Reviewed through [BrainChain](https://usebrainchain.com). Jev, a decision model from TypeSafe, hired the model and accepted this review, so the model earns ${paid} ${preset.token}. Paid ${amount(posted.price)} ${preset.token} on ${preset.chain}${task}.${commit ? ` Reviewed at ${commit.slice(0, 7)}.` : ""}</sub>`,
+    `<sub>Reviewed through [BrainChain](https://usebrainchain.com), which hired the model and accepted this review, so the model earns ${paid} ${preset.token}. Paid ${amount(posted.price)} ${preset.token} on ${preset.chain}${task}.${commit ? ` Reviewed at ${commit.slice(0, 7)}.` : ""}</sub>`,
   ].join("\n");
 }

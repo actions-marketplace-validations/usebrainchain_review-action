@@ -21,8 +21,24 @@ async function call(token: string, path: string, init: RequestInit & { accept?: 
     },
     signal: AbortSignal.timeout(30_000),
   });
-  if (!response.ok) throw new GitHubError(`GitHub answered ${response.status} for ${path}: ${(await response.text()).slice(0, 200)}`, response.status);
+  if (!response.ok) {
+    // GitHub refuses a rate-limited request with 403 as well as 429. As 429 it is tried again, and not taken for a missing permission.
+    const limited = response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after"));
+    const answer = `GitHub answered ${response.status}${limited ? " (rate limited)" : ""} for ${path}: ${reason(await response.text())}`;
+    throw new GitHubError(response.status === 401 ? `The github-token was rejected: ${answer}` : answer, limited ? 429 : response.status);
+  }
   return response;
+}
+
+/** GitHub's own message when the body is JSON. A failed job shows an error's first line only, and GitHub pretty-prints its JSON. */
+function reason(body: string): string {
+  try {
+    const message = (JSON.parse(body) as { message?: unknown } | null)?.message;
+    if (typeof message === "string" && message.trim()) return message.replace(/\s+/g, " ").trim().slice(0, 200);
+  } catch {
+    // Not JSON: the text itself, on one line.
+  }
+  return body.replace(/\s+/g, " ").trim().slice(0, 200);
 }
 
 /** The pull request's diff, or undefined when GitHub will not produce one: over 300 files or 20,000 lines. */
@@ -43,13 +59,16 @@ export async function pullRequest(token: string, repo: string, number: number): 
 /**
  * The login a person's token comments as. GET /user refuses the workflow token
  * and App installation tokens, which comment as bots: undefined stands for those.
+ * Any other failure throws, since a person's token taken for a bot would miss
+ * that person's own record and pay again.
  */
 export async function commenter(token: string): Promise<string | undefined> {
   try {
     const user = (await (await call(token, "/user")).json()) as { login?: unknown };
     return typeof user.login === "string" ? user.login : undefined;
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof GitHubError && (error.status === 401 || error.status === 403)) return undefined;
+    throw error;
   }
 }
 
@@ -63,8 +82,8 @@ export interface IssueComment {
 /**
  * The newest comment starting with the marker that this action's identity left:
  * `login` for a person's token, otherwise any bot, since an App's own login
- * cannot be read with its token. The comment records what was paid for, so no
- * one else may write it.
+ * cannot be read with its token. The comment records what was paid for, so
+ * comments by anyone else are ignored.
  */
 export async function ownComment(token: string, repo: string, number: number, login: string | undefined, marker: string): Promise<IssueComment | undefined> {
   let newest: IssueComment | undefined;

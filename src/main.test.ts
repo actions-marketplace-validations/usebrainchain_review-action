@@ -23,7 +23,6 @@ const desk = vi.hoisted(() => ({ post: vi.fn(), check: vi.fn(), quote: vi.fn() }
 
 vi.mock("@actions/core", () => ({
   getInput: (name: string) => state.inputs[name] ?? "",
-  getBooleanInput: (name: string) => state.inputs[name] === "true",
   setSecret: () => undefined,
   info: (message: string) => state.infos.push(message),
   notice: (message: string) => state.notices.push(message),
@@ -36,11 +35,15 @@ vi.mock("@actions/core", () => ({
     throw new Error(message);
   },
   summary: {
+    pending: [] as string[],
     addRaw(body: string) {
-      state.summary.push(body);
+      this.pending.push(body);
       return this;
     },
-    write: async () => undefined,
+    async write(options?: { overwrite?: boolean }) {
+      state.summary = options?.overwrite ? this.pending : [...state.summary, ...this.pending];
+      this.pending = [];
+    },
   },
 }));
 vi.mock("./desk.js", async (importOriginal) => ({ ...(await importOriginal<typeof import("./desk.js")>()), post: desk.post, check: desk.check, quote: desk.quote }));
@@ -81,10 +84,15 @@ const refuses = (message: string) => async (_preset: unknown, _account: unknown,
 /** A pull request's comments and state, served the way GitHub's REST API serves them. */
 let gh: {
   login?: string;
+  /** A status GET /user answers with instead of the login. */
+  userStatus?: number;
   comments: { id: number; body: string; login: string }[];
   pr: { state: string; head: { sha: string } };
   diff: string | number;
-  postStatus?: number;
+  /** A status every comment POST answers with instead of saving the comment; a list answers one status per POST, then saves. "lost" saves the comment and drops the answer. */
+  postStatus?: number | (number | "lost")[];
+  /** Refusals come as GitHub's rate limit sends them. */
+  limited?: boolean;
   /** A status every comment PATCH answers with instead of saving the comment; a list answers one status per PATCH, then saves. */
   patchStatus?: number | number[];
   /** Files at the head commit, served by the contents API. */
@@ -98,7 +106,10 @@ function stubGitHub() {
     const { pathname } = new URL(input);
     const method = init.method ?? "GET";
     const write = (c: { id: number; body: string }) => Response.json({ id: c.id, body: c.body, html_url: `https://gh/c/${c.id}` });
-    if (pathname === "/user") return gh.login ? Response.json({ login: gh.login }) : new Response("Resource not accessible by integration", { status: 403 });
+    if (pathname === "/user") {
+      if (gh.userStatus) return new Response("Service Unavailable", { status: gh.userStatus });
+      return gh.login ? Response.json({ login: gh.login }) : new Response("Resource not accessible by integration", { status: 403 });
+    }
     if (pathname === "/repos/acme/api/pulls/3") {
       if (new Headers(init.headers).get("accept") !== "application/vnd.github.diff") return Response.json(gh.pr);
       return typeof gh.diff === "number" ? new Response("{}", { status: gh.diff }) : new Response(gh.diff);
@@ -107,12 +118,18 @@ function stubGitHub() {
       return Response.json(gh.comments.map((c) => ({ id: c.id, body: c.body, html_url: `https://gh/c/${c.id}`, user: { login: c.login, type: c.login.endsWith("[bot]") ? "Bot" : "User" } })));
     }
     if (pathname === "/repos/acme/api/issues/3/comments" && method === "POST") {
-      if (gh.postStatus) {
-        state.log.push(`post refused ${gh.postStatus}`);
-        return new Response("Resource not accessible by integration", { status: gh.postStatus });
+      const refused = Array.isArray(gh.postStatus) ? gh.postStatus.shift() : gh.postStatus;
+      if (typeof refused === "number" && refused) {
+        state.log.push(`post refused ${refused}`);
+        if (gh.limited) return new Response("API rate limit exceeded", { status: refused, headers: { "x-ratelimit-remaining": "0" } });
+        return new Response("Resource not accessible by integration", { status: refused });
       }
       const c = { id: 100 + gh.comments.length, body: (JSON.parse(String(init.body)) as { body: string }).body, login: gh.login ?? "github-actions[bot]" };
       gh.comments.push(c);
+      if (refused === "lost") {
+        state.log.push(`post lost ${visible(c.body)}`);
+        throw new TypeError("fetch failed", { cause: new Error("The operation was aborted due to timeout") });
+      }
       state.log.push(`post ${visible(c.body)}`);
       return write(c);
     }
@@ -140,10 +157,10 @@ function stubGitHub() {
   });
 }
 
-function event(pr: Record<string, unknown> = {}) {
+function event(pr: Record<string, unknown> = {}, repository?: { private: boolean }) {
   const path = join(mkdtempSync(join(tmpdir(), "review-action-")), "event.json");
   const base = { number: 3, title: "Fix the retry loop", body: null, user: { login: "dev", type: "User" }, head: { sha: SHA, repo: { full_name: "acme/api" } }, base: { repo: { full_name: "acme/api" } } };
-  writeFileSync(path, JSON.stringify({ pull_request: { ...base, ...pr } }));
+  writeFileSync(path, JSON.stringify({ pull_request: { ...base, ...pr }, ...(repository ? { repository } : {}) }));
   vi.stubEnv("GITHUB_EVENT_PATH", path);
   vi.stubEnv("GITHUB_EVENT_NAME", "pull_request");
 }
@@ -196,8 +213,8 @@ describe("paying once per commit", () => {
       "read balanceOf",
       "post BrainChain is reviewing aaaaaaa.",
       "pay",
+      `edit BrainChain is reviewing aaaaaaa (order \`${ORDER}\`). The review replaces this comment if BrainChain accepts it; if not, the payment will be refunded.`,
       `output order=${ORDER}`,
-      `edit BrainChain is reviewing aaaaaaa (order \`${ORDER}\`). The review replaces this comment if Jev accepts it; if not, the payment will be refunded.`,
       "output task-id=4",
       "edit ### BrainChain review",
       "output accepted=true",
@@ -231,7 +248,7 @@ describe("paying once per commit", () => {
     const legacy = statusComment("BrainChain is reviewing aaaaaaa.", { commit: SHA });
     gh.comments = [{ id: 1, login: "github-actions[bot]", body: legacy }];
     await expect(go()).rejects.toThrow(
-      `The comment on the pull request names aaaaaaa but no order: an earlier run wrote it before paying and did not record the order after, so this commit may be paid for already, and this run pays nothing. Find the order id on the "Paid" line of the earlier run's log and follow it at ${preset("testnet", "base").desk}/x402/tasks/<order id>, or delete the comment and re-run the job to pay for a new review.`,
+      `The comment on the pull request names aaaaaaa but no order. An earlier run wrote it before paying and recorded no order after it, so this commit may already be paid for. This run pays nothing. Find the order id on the "Paid" line of the earlier run's log and follow it at ${preset("testnet", "base").desk}/x402/tasks/<order id>, or delete the comment and re-run the job to pay for a new review.`,
     );
     expect(desk.post).not.toHaveBeenCalled();
     expect(desk.quote).not.toHaveBeenCalled();
@@ -246,10 +263,11 @@ describe("paying once per commit", () => {
     expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
   });
 
-  it("writes the order to the job summary as soon as the desk takes the payment", async () => {
+  it("writes the order to the job summary as soon as the desk takes the payment, and says it was sent until the desk settles it", async () => {
     desk.check.mockResolvedValue({ kind: "waiting", state: "hired" });
     await go();
-    expect(state.summary).toEqual([`Paid 1 test USDC on Base Sepolia for the review of aaaaaaa: order \`${ORDER}\`.`]);
+    expect(state.summary).toEqual([`Sent a payment of 1 test USDC on Base Sepolia for the review of aaaaaaa: order \`${ORDER}\`.`]);
+    expect(state.infos[0]).toBe(`Sent a payment of 1 test USDC on Base Sepolia. Order ${ORDER}.`);
   });
 
   it("tries the comment that records the order again when GitHub fails, and pays once it is saved", async () => {
@@ -279,6 +297,41 @@ describe("paying once per commit", () => {
     expect(gh.comments).toEqual([]);
   });
 
+  it("tries the comment that records the order again when GitHub's rate limit refuses it, instead of asking for a permission", async () => {
+    gh.postStatus = [403, 403];
+    gh.limited = true;
+    await go();
+    expect(state.log.slice(0, 5)).toEqual(["read balanceOf", "post refused 403", "post refused 403", "post BrainChain is reviewing aaaaaaa.", "pay"]);
+    expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
+
+    gh.comments = [];
+    gh.postStatus = 403;
+    await expect(go()).rejects.toThrow(/^GitHub did not save the comment that records the order, so the payment was not sent and no review was paid for\. Re-run the job once GitHub accepts comments\. GitHub answered 403 \(rate limited\)/);
+  });
+
+  it("edits the comment GitHub saved without answering, instead of posting a second", async () => {
+    gh.postStatus = ["lost"];
+    await go();
+    expect(state.log.slice(0, 4)).toEqual(["read balanceOf", "post lost BrainChain is reviewing aaaaaaa.", "edit BrainChain is reviewing aaaaaaa.", "pay"]);
+    expect(gh.comments).toHaveLength(1);
+    expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
+  });
+
+  it("removes a comment GitHub saved without answering when the payment is not sent, so a re-run waits on no order", async () => {
+    gh.postStatus = ["lost"];
+    gh.patchStatus = 503;
+    await expect(go()).rejects.toThrow(/^GitHub did not save the comment that records the order, so the payment was not sent/);
+    expect(state.log).toEqual(["read balanceOf", "post lost BrainChain is reviewing aaaaaaa.", "edit refused 503", "edit refused 503", "delete 100"]);
+    expect(gh.comments).toEqual([]);
+
+    gh.patchStatus = undefined;
+    gh.postStatus = [502, 502, "lost"];
+    state.log = [];
+    await expect(go()).rejects.toThrow(/^GitHub did not save the comment that records the order, so the payment was not sent/);
+    expect(state.log).toEqual(["read balanceOf", "post refused 502", "post refused 502", "post lost BrainChain is reviewing aaaaaaa.", "delete 100"]);
+    expect(gh.comments).toEqual([]);
+  });
+
   it("fails naming the order when the desk names another order and the comment cannot record it", async () => {
     const other = `0x${"ef".repeat(32)}` as const;
     desk.post.mockImplementation(async (_preset: unknown, _account: unknown, _maxPrice: unknown, _brief: unknown, record: Recorder) => {
@@ -286,10 +339,20 @@ describe("paying once per commit", () => {
       gh.patchStatus = 503;
       return { order: other, price: 1_000_000n, uncertain: false };
     });
-    await expect(go()).rejects.toThrow(`Paid 1 test USDC on Base Sepolia as order ${other}, but the comment on the pull request could not record it`);
+    await expect(go()).rejects.toThrow(`Sent a payment of 1 test USDC on Base Sepolia as order ${other}, but the comment on the pull request could not record it`);
     expect(state.outputs.order).toBe(other);
     expect(state.summary[0]).toContain(other);
     expect(desk.check).not.toHaveBeenCalled();
+  });
+
+  it("tries posting the accepted review again when GitHub fails", async () => {
+    desk.check.mockImplementation(async () => {
+      gh.patchStatus = [502];
+      return { kind: "accepted", taskId: "4", review: "Looks correct." };
+    });
+    await go();
+    expect(state.log.slice(-3)).toEqual(["edit refused 502", "edit ### BrainChain review", "output accepted=true"]);
+    expect(gh.comments[0]!.body).toContain("Looks correct.");
   });
 
   it("follows the recorded order on a re-run and pays nothing", async () => {
@@ -298,9 +361,11 @@ describe("paying once per commit", () => {
     await go();
     expect(desk.post).not.toHaveBeenCalled();
     expect(desk.check).toHaveBeenCalledWith(expect.anything(), ORDER);
-    expect(state.log).toEqual([`output order=${ORDER}`, "output task-id=4", "edit Jev did not accept the review of aaaaaaa, so it is not posted and the payment is being refunded.", "output accepted=false"]);
+    expect(state.log).toEqual([`output order=${ORDER}`, "output task-id=4", "edit BrainChain did not accept the review of aaaaaaa, so it is not posted and the payment is being refunded. For a new review, delete this comment and re-run the job, or push a new commit if the workflow reviews each push.", "output accepted=false"]);
     expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
-    expect(state.notices[0]).toMatch(/the 1 test USDC is being refunded/);
+    expect(state.notices).toEqual([
+      `BrainChain did not accept the review, so it is not posted and the 1 test USDC is being refunded to 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 on Base Sepolia.`,
+    ]);
   });
 
   it.each([
@@ -314,6 +379,16 @@ describe("paying once per commit", () => {
     gh.comments = [{ id: 1, login: author, body: statusComment("BrainChain is reviewing aaaaaaa.", PAID) }];
     await go();
     expect(desk.post).toHaveBeenCalledTimes(pays ? 1 : 0);
+  });
+
+  it("fails before paying when GitHub does not say which login a person's token comments as", async () => {
+    gh.login = "octo";
+    gh.userStatus = 502;
+    gh.comments = [{ id: 1, login: "octo", body: statusComment("BrainChain is reviewing aaaaaaa.", PAID) }];
+    await expect(go()).rejects.toThrow(/GitHub answered 502 for \/user/);
+    expect(desk.post).not.toHaveBeenCalled();
+    expect(desk.check).not.toHaveBeenCalled();
+    expect(state.log).toEqual([]);
   });
 
   it("pays for a new commit even when an older one is recorded", async () => {
@@ -352,6 +427,8 @@ describe("paying once per commit", () => {
     gh.postStatus = 403;
     await expect(go()).rejects.toThrow(/Could not comment on the pull request, so no review was paid for\. The github-token needs pull-requests: write\./);
     expect(state.log).toEqual(["read balanceOf", "post refused 403"]);
+    gh.postStatus = 401;
+    await expect(go()).rejects.toThrow(/^Could not comment on the pull request, so no review was paid for\. The github-token was rejected: GitHub answered 401 for /);
   });
 
   it("takes away the comment it made when the payment is not made, or when it does not settle", async () => {
@@ -365,12 +442,51 @@ describe("paying once per commit", () => {
     expect(gh.comments).toEqual([]);
   });
 
+  it("says the payment was sent, not paid, until it settles, and leaves order unset when it does not", async () => {
+    desk.check.mockResolvedValue({ kind: "failed", reason: "The payment did not settle. Nothing was charged." });
+    await expect(go()).rejects.toThrow("The payment did not settle. Nothing was charged.");
+    expect(state.infos).toEqual([`Sent a payment of 1 test USDC on Base Sepolia. Order ${ORDER}.`]);
+    expect(state.summary).toEqual(["The payment of 1 test USDC on Base Sepolia for the review of aaaaaaa did not settle, so nothing was charged."]);
+    expect(state.outputs.order).toBeUndefined();
+  });
+
+  const check = (where: string) =>
+    `Look up 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 in a Base Sepolia block explorer. If its test USDC transfers show the payment, write to hello@usebrainchain.com with the order id. If they show none ten minutes after the payment was signed, nothing was charged: delete ${where} and re-run the job.`;
+
+  it("fails, and says so in the comment, when BrainChain confirmed the order but still has no record of it when the job stops waiting", async () => {
+    desk.check.mockResolvedValue({ kind: "waiting", state: "unknown" });
+    await expect(go()).rejects.toThrow(`The payment was signed as order ${ORDER} and BrainChain has no record of it. ${check("the comment on the pull request")}`);
+    expect(state.summary[0]).toBe(`Sent a payment of 1 test USDC on Base Sepolia for the review of aaaaaaa: order \`${ORDER}\`.`);
+    expect(visible(gh.comments[0]!.body)).toBe(`The payment for the review of aaaaaaa was signed as order \`${ORDER}\` and BrainChain has no record of it. ${check("this comment")}`);
+    expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
+  });
+
+  it("fails as a re-run would when the confirmation was lost and BrainChain has no record of the order, and says what happened", async () => {
+    desk.post.mockImplementation(async (_preset: unknown, _account: unknown, _maxPrice: unknown, _brief: unknown, record: Recorder) => {
+      await record({ order: ORDER, price: 1_000_000n });
+      return { order: ORDER, price: 1_000_000n, uncertain: true };
+    });
+    desk.check.mockResolvedValue({ kind: "waiting", state: "unknown" });
+    await expect(go()).rejects.toThrow(`The payment was signed as order ${ORDER}, but its confirmation was lost, and BrainChain has no record of it. ${check("the comment on the pull request")}`);
+    expect(state.infos[0]).toBe(`Signed a payment of 1 test USDC on Base Sepolia. Order ${ORDER} (the confirmation was lost; waiting on that order).`);
+    expect(state.infos.join("\n")).not.toMatch(/^Paid/m);
+    expect(state.summary).toEqual([`Signed a payment of 1 test USDC on Base Sepolia for the review of aaaaaaa, but BrainChain's confirmation was lost: order \`${ORDER}\`.`]);
+    expect(visible(gh.comments[0]!.body)).toBe(
+      `The payment for the review of aaaaaaa was signed as order \`${ORDER}\`, but its confirmation was lost, and BrainChain has no record of it. ${check("this comment")}`,
+    );
+    expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
+    expect(state.outputs.order).toBe(ORDER);
+
+    await expect(go()).rejects.toThrow(`The payment was signed as order ${ORDER} and BrainChain has no record of it.`);
+    expect(desk.post).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves accepted empty, and says a re-run posts the review, when the job stops waiting", async () => {
     desk.check.mockResolvedValue({ kind: "waiting", state: "hired" });
     await go();
     expect(state.outputs.accepted).toBeUndefined();
     expect(state.warnings.at(-1)).toMatch(/^No graded review within 1 minute of the job starting, so none is posted yet\./);
-    expect(visible(gh.comments[0]!.body)).toBe("The review of aaaaaaa is taking longer than this job waits for it. Re-running the job posts it once Jev accepts it, without paying again.");
+    expect(visible(gh.comments[0]!.body)).toBe("The review of aaaaaaa is taking longer than this job waits for it. Re-running the job posts it once BrainChain accepts it, without paying again.");
     expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
     state.inputs["wait-minutes"] = "2";
     gh.comments = [];
@@ -386,6 +502,24 @@ describe("paying once per commit", () => {
   });
 });
 
+describe("what the pull request and the run's annotations say", () => {
+  it.each([
+    { kind: "accepted", taskId: "4", review: "Looks correct." },
+    { kind: "rejected", taskId: "4" },
+    { kind: "refund-failed", taskId: "4" },
+    { kind: "waiting", taskId: "4", state: "hired" },
+  ])("names BrainChain, not its decision model, when the order is $kind", async (outcome) => {
+    desk.check.mockResolvedValue(outcome);
+    const error = await go().catch((e: unknown) => e as Error);
+    const said = [...gh.comments.map((c) => c.body), ...state.notices, ...state.warnings, ...(error ? [error.message] : [])];
+    expect(said.join("\n")).not.toMatch(/Jev|TypeSafe/);
+    if (outcome.kind === "refund-failed") {
+      expect(visible(gh.comments[0]!.body)).toBe("BrainChain did not accept the review of aaaaaaa. The refund could not be sent automatically, and BrainChain has been alerted.");
+      expect(error?.message).toMatch(/^BrainChain did not accept the review, and the refund to 0x\w+ could not be sent automatically\./);
+    }
+  });
+});
+
 describe("the earlier review", () => {
   const OLD = "b".repeat(40);
   const earlier = reviewComment(preset("testnet", "base"), { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", taskId: "3", review: "The old commit looks correct." }, OLD);
@@ -398,8 +532,8 @@ describe("the earlier review", () => {
     await go();
     expect(state.log.filter((line) => line.startsWith("edit"))).toEqual([
       "edit BrainChain is reviewing aaaaaaa. The review of bbbbbbb stays below until the new one is accepted.",
-      `edit BrainChain is reviewing aaaaaaa (order \`${ORDER}\`). The review replaces this comment if Jev accepts it; if not, the payment will be refunded. The review of bbbbbbb stays below until the new one is accepted.`,
-      "edit Jev did not accept the review of aaaaaaa, so it is not posted and the payment is being refunded. The review of bbbbbbb is below.",
+      `edit BrainChain is reviewing aaaaaaa (order \`${ORDER}\`). The review replaces this comment if BrainChain accepts it; if not, the payment will be refunded. The review of bbbbbbb stays below until the new one is accepted.`,
+      "edit BrainChain did not accept the review of aaaaaaa, so it is not posted and the payment is being refunded. For a new review, delete this comment and re-run the job, or push a new commit if the workflow reviews each push. The review of bbbbbbb is below.",
     ]);
     expect(shownReview(gh.comments[0]!.body)).toBe(earlier);
     expect(paidFor(gh.comments[0]!.body)).toEqual(PAID);
@@ -428,6 +562,7 @@ describe("the earlier review", () => {
     await expect(go()).rejects.toThrow("The payment did not settle.");
     expect(desk.post).not.toHaveBeenCalled();
     expect(gh.comments[0]!.body).toBe(earlier);
+    expect(state.outputs.order).toBeUndefined();
   });
 });
 
@@ -469,6 +604,50 @@ describe("the brief", () => {
   });
 });
 
+describe("the job log", () => {
+  it("prints a skipped path with a line break on one line, so it cannot start a workflow command", async () => {
+    const path = String.raw`dist/x\n::warning::injected.js`;
+    gh.diff = `diff --git "a/${path}" "b/${path}"\nindex 1..2 100644\n--- "a/${path}"\n+++ "b/${path}"\n@@ -1 +1 @@\n-a\n+b\n${DIFF}`;
+    await go();
+    expect(state.infos).toContain("Left out of the brief: dist/x?::warning::injected.js");
+    expect(state.infos.flatMap((line) => line.split("\n")).filter((line) => line.startsWith("::"))).toEqual([]);
+  });
+});
+
+describe("the event", () => {
+  it("is named when it is not a pull request event", async () => {
+    for (const name of ["push", "issue_comment", "workflow_dispatch"]) {
+      vi.stubEnv("GITHUB_EVENT_NAME", name);
+      await expect(go()).rejects.toThrow(`Started by ${name}; this action reviews pull requests (pull_request or pull_request_target).`);
+    }
+    vi.stubEnv("GITHUB_EVENT_NAME", "");
+    await expect(go()).rejects.toThrow("Run this action in a GitHub workflow, on pull_request or pull_request_target events.");
+    expect(desk.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("a private repository", () => {
+  it("is refused, since reviews are public, unless review-private is true", async () => {
+    event({}, { private: true });
+    await expect(go()).rejects.toThrow(
+      "This repository is private, and BrainChain reviews are public: the pull request's title, description and diff would be published on BrainChain. Set review-private to true to send them anyway. No review was paid for.",
+    );
+    expect(state.log).toEqual([]);
+    expect(desk.post).not.toHaveBeenCalled();
+    state.inputs["review-private"] = "yes";
+    await expect(go()).rejects.toThrow('review-private must be true or false, not "yes".');
+    state.inputs["review-private"] = "true";
+    await go();
+    expect(desk.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not refused when public", async () => {
+    event({}, { private: false });
+    await go();
+    expect(desk.post).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("skipping without payment", () => {
   it("skips bot pull requests unless review-bots is true", async () => {
     event({ user: { login: "dependabot[bot]", type: "Bot" } });
@@ -477,6 +656,18 @@ describe("skipping without payment", () => {
     expect(desk.post).not.toHaveBeenCalled();
     state.inputs["review-bots"] = "true";
     await go();
+    expect(desk.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes review-bots as true or false in any casing, and names the input on anything else", async () => {
+    event({ user: { login: "dependabot[bot]", type: "Bot" } });
+    state.inputs["review-bots"] = "TRUE";
+    await go();
+    expect(desk.post).toHaveBeenCalledTimes(1);
+    for (const value of ["yes", "1"]) {
+      state.inputs["review-bots"] = value;
+      await expect(go()).rejects.toThrow(`review-bots must be true or false, not "${value}".`);
+    }
     expect(desk.post).toHaveBeenCalledTimes(1);
   });
 
@@ -503,13 +694,41 @@ describe("skipping without payment", () => {
     expect(state.log).toEqual([]);
   });
 
-  it("warns, naming the likely cause, when payer-key is empty", async () => {
+  it("fails, naming the likely cause, when payer-key is empty on a person's pull request", async () => {
+    state.inputs["payer-key"] = "";
+    await expect(go()).rejects.toThrow("payer-key is empty, so no review was paid for. Check that the repository has the secret and that the workflow names it exactly.");
+    expect(state.log).toEqual([]);
+    expect(gh.comments).toEqual([]);
+  });
+
+  it("only warns when payer-key is empty on a bot's pull request, which reads Dependabot secrets", async () => {
+    event({ user: { login: "dependabot[bot]", type: "Bot" } });
+    state.inputs["review-bots"] = "true";
     state.inputs["payer-key"] = "";
     await go();
-    expect(state.warnings).toEqual([
-      "payer-key is empty: no review was paid for. Check that the secret name in the workflow matches the repository secret. Pull requests opened by Dependabot read Dependabot secrets instead.",
-    ]);
+    expect(state.warnings).toEqual(["payer-key is empty: no review was paid for. Pull requests opened by Dependabot read Dependabot secrets, so add the key there too to review them."]);
     expect(state.log).toEqual([]);
+  });
+});
+
+describe("payer-key", () => {
+  it("is refused without echoing its value when it is outside the curve's range", async () => {
+    for (const key of ["f".repeat(64), "0".repeat(64)]) {
+      state.inputs["payer-key"] = key;
+      const error = (await go().catch((e: unknown) => e)) as Error;
+      expect(error.message).toBe("payer-key is not a valid private key.");
+    }
+    expect(gh.comments).toEqual([]);
+    expect(desk.post).not.toHaveBeenCalled();
+  });
+
+  it("takes 0x or 0X in front of the hex, or neither", async () => {
+    for (const key of [KEY, KEY.slice(2), `0X${KEY.slice(2)}`]) {
+      state.inputs["payer-key"] = key;
+      gh.comments = [];
+      await go();
+    }
+    expect(desk.post).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -529,9 +748,15 @@ describe("funds", () => {
 
   it("on Robinhood Chain, fails before paying until Permit2 is approved for max-price", async () => {
     state.inputs["pay-on"] = "robinhood";
-    await expect(go()).rejects.toThrow(/lets Permit2 spend 0 test USDG on Robinhood Chain testnet, less than max-price 1 test USDG\. From that wallet, call approve\(0x000000000022D473030F116dDEE9F6B43aC78BA3, 1000000\) on the test USDG contract .* once; 1000000 is 1 test USDG.*Nothing was charged\./);
+    await expect(go()).rejects.toThrow(
+      /lets Permit2 spend 0 test USDG on Robinhood Chain testnet, less than max-price 1 test USDG\. Each review draws that allowance down, so approve what you plan to spend on reviews: from that wallet, call approve\(0x000000000022D473030F116dDEE9F6B43aC78BA3, amount\) on the test USDG contract 0x\w+, with the amount in 6 decimals \(20000000 is 20 test USDG, 20 reviews at max-price\)\. The approval is a transaction, so the wallet needs a little ETH on Robinhood Chain testnet for gas\. Nothing was charged\.$/,
+    );
     expect(desk.post).not.toHaveBeenCalled();
     expect(gh.comments).toEqual([]);
+    // What earlier reviews left of the allowance.
+    state.reads.allowance = 400_000n;
+    state.inputs["max-price"] = "2.5";
+    await expect(go()).rejects.toThrow(/lets Permit2 spend 0\.4 test USDG .* \(50000000 is 50 test USDG, 20 reviews at max-price\)/);
     state.reads.allowance = 2n ** 256n - 1n;
     await go();
     expect(desk.post).toHaveBeenCalledTimes(1);
