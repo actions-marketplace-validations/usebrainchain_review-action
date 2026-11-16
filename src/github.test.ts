@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { comment, commenter, diff, fileAt, ownComment, remove } from "./github.js";
+import { comment, commenter, diff, fileAt, GitHubError, ownComment, remove } from "./github.js";
 
 const MARKER = "<!-- brainchain-review -->";
 
@@ -29,6 +29,17 @@ describe("comment", () => {
       const calls = github({ PATCH: () => new Response("no", { status }), POST: () => Response.json({ id: 9, html_url: "https://gh/c/new" }) });
       expect((await comment("t", "acme/api", 3, "new", { id: 7 })).html_url).toBe("https://gh/c/new");
       expect(calls.map((c) => c.method)).toEqual(["PATCH", "POST"]);
+    }
+  });
+
+  it("takes a rate-limited 403 for 429: it fails to be tried again, and posts no second comment", async () => {
+    for (const headers of [{ "x-ratelimit-remaining": "0" }, { "retry-after": "60" }] as Record<string, string>[]) {
+      const calls = github({ PATCH: () => new Response("API rate limit exceeded", { status: 403, headers }), POST: () => Response.json({ id: 9 }) });
+      const error = (await comment("t", "acme/api", 3, "new", { id: 7 }).catch((e: unknown) => e)) as GitHubError;
+      expect(error).toBeInstanceOf(GitHubError);
+      expect(error.status).toBe(429);
+      expect(error.message).toMatch(/^GitHub answered 403 \(rate limited\) for /);
+      expect(calls.map((c) => c.method)).toEqual(["PATCH"]);
     }
   });
 
@@ -71,6 +82,32 @@ describe("commenter", () => {
     expect(await commenter("t")).toBe("octo");
     github({ GET: () => new Response("Resource not accessible by integration", { status: 403 }) });
     expect(await commenter("t")).toBeUndefined();
+    github({ GET: () => new Response("Bad credentials", { status: 401 }) });
+    expect(await commenter("t")).toBeUndefined();
+  });
+
+  it("fails when GitHub fails or does not answer, instead of taking the token for a bot", async () => {
+    github({ GET: () => new Response("down", { status: 502 }) });
+    await expect(commenter("t")).rejects.toThrow(/GitHub answered 502 for \/user/);
+    vi.stubGlobal("fetch", async () => Promise.reject(new TypeError("fetch failed")));
+    await expect(commenter("t")).rejects.toThrow("fetch failed");
+  });
+});
+
+describe("errors", () => {
+  it("print GitHub's message from a pretty-printed body on one line, since a failed job shows the first line only", async () => {
+    const pretty = JSON.stringify({ message: "Resource not accessible by integration", documentation_url: "https://docs.github.com/rest", status: "403" }, null, 2);
+    github({ POST: () => new Response(pretty, { status: 403, headers: { "content-type": "application/json" } }) });
+    await expect(comment("t", "acme/api", 3, "new")).rejects.toThrow(/^GitHub answered 403 for \/repos\/acme\/api\/issues\/3\/comments: Resource not accessible by integration$/);
+    github({ POST: () => new Response("<html>\n<body>Unicorn</body>\n</html>", { status: 502 }) });
+    await expect(comment("t", "acme/api", 3, "new")).rejects.toThrow(/^GitHub answered 502 for \/repos\/acme\/api\/issues\/3\/comments: <html> <body>Unicorn<\/body> <\/html>$/);
+  });
+
+  it("say the github-token was rejected on a 401", async () => {
+    github({ GET: () => new Response(JSON.stringify({ message: "Bad credentials", status: "401" }, null, 2), { status: 401 }) });
+    const error = (await ownComment("t", "acme/api", 3, undefined, MARKER).catch((e: unknown) => e)) as GitHubError;
+    expect(error.status).toBe(401);
+    expect(error.message).toBe("The github-token was rejected: GitHub answered 401 for /repos/acme/api/issues/3/comments?per_page=100&page=1: Bad credentials");
   });
 });
 

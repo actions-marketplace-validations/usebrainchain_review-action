@@ -1,3 +1,8 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
+
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
 
@@ -49,6 +54,20 @@ describe("post", () => {
     expect(posted.order).toBe(orderId(seen[0]!));
   });
 
+  it("sends the desk the title, brief and levels only", async () => {
+    const { fetchImpl } = desk();
+    const sent: unknown[] = [];
+    const reading = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push(await request.clone().json());
+      return fetchImpl(request);
+    }) as typeof fetch;
+    const wide = { ...brief, skipped: ["yarn.lock"], truncated: false, reviewable: true, files: ["src/a.ts"], context: 20 };
+    await post(base, account, units("1"), wide, kept, reading);
+    expect(sent).toHaveLength(2);
+    for (const body of sent) expect(body).toStrictEqual(brief);
+  });
+
   it("sends nothing, and throws the recorder's error, when the order cannot be recorded", async () => {
     const { fetchImpl, seen } = desk();
     const refused = new Error("GitHub did not save the comment that records the order, so the payment was not sent and no review was paid for.");
@@ -68,6 +87,38 @@ describe("post", () => {
       const { fetchImpl, seen } = desk(terms);
       await expect(post(base, account, units("1"), brief, kept, fetchImpl)).rejects.toThrow(/Nothing was charged/);
       expect(seen).toHaveLength(0);
+    }
+  });
+
+  it("times out the request carrying the payment on its own clock, started after the order is recorded", async () => {
+    const usdc = { scheme: "exact", network: base.network, amount: "1000000", asset: base.asset, payTo: base.payTo, maxTimeoutSeconds: 300, extra: { name: "USDC", version: "2" } };
+    const challenge = Buffer.from(JSON.stringify({ x402Version: 2, resource: { url: `${base.desk}/x402/tasks` }, accepts: [usdc] })).toString("base64");
+    const arrived: number[] = [];
+    // A desk that takes the signed payment and never answers.
+    const server = createServer((request, response) => {
+      if (!request.headers["payment-signature"]) return void response.writeHead(402, { "payment-required": challenge }).end("{}");
+      arrived.push(Date.now());
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const local = { ...base, desk: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+    let recorded: number | undefined;
+    const slow: Recorder = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      recorded = Date.now();
+    };
+    // A signal that only reaches the request through x402's clones is lost once they are collected.
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    const collecting = setInterval(gc, 20);
+    try {
+      const posted = await post(local, account, units("1"), brief, slow, fetch, 200);
+      expect(posted.uncertain).toBe(true);
+      expect(arrived).toHaveLength(1);
+      expect(arrived[0]!).toBeGreaterThanOrEqual(recorded!);
+    } finally {
+      clearInterval(collecting);
+      server.closeAllConnections();
+      server.close();
     }
   });
 
@@ -92,6 +143,11 @@ describe("post", () => {
   it("reports a refused brief as uncharged", async () => {
     const { fetchImpl } = desk({}, () => Response.json({ error: "brief must be 1 to 32,000 characters." }, { status: 400 }));
     await expect(post(base, account, units("1"), brief, kept, fetchImpl)).rejects.toThrow("brief must be 1 to 32,000 characters. Nothing was charged.");
+  });
+
+  it("ends the desk's own text with a full stop before saying nothing was charged", async () => {
+    const { fetchImpl } = desk({}, () => Response.json({ error: "Payment verification failed: insufficient_funds" }, { status: 402 }));
+    await expect(post(base, account, units("1"), brief, kept, fetchImpl)).rejects.toThrow(/^Payment verification failed: insufficient_funds\. Nothing was charged\.$/);
   });
 
   it("names the desk's price when it is above max-price, without x402's own wording", async () => {
@@ -179,6 +235,13 @@ describe("check", () => {
   it("keeps waiting while the task runs", async () => {
     expect(await check(base, order, reply({ state: "posted", taskId: "4", task: { status: "hired" } }))).toEqual({ kind: "waiting", taskId: "4", state: "hired" });
   });
+
+  it("drops a task id or state that could start a workflow command in the job log", async () => {
+    expect(await check(base, order, reply({ state: "posted", taskId: "4\n::warning::injected", task: { status: "hired\n::stop-commands::x" } }))).toEqual({ kind: "waiting", state: "posted" });
+    expect(await check(base, order, reply({ state: "::error::x", taskId: 12 }))).toEqual({ kind: "waiting", taskId: "12", state: "unknown" });
+    const view = { state: "posted", taskId: "](https://evil.example)", task: { status: "graded", accepted: true }, result: `${base.desk}/records/0x1.txt` };
+    expect(await check(base, order, reply(view))).toEqual({ kind: "accepted", review: "Looks correct: the loop now stops after three tries." });
+  });
 });
 
 describe("presets and amounts", () => {
@@ -200,7 +263,7 @@ describe("reviewComment", () => {
   it("links the task on mainnet and states what the model earns", () => {
     const text = reviewComment(preset("mainnet", "base"), { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", taskId: "9", review: "  No defects found.  " });
     expect(text).toContain("<!-- brainchain-review -->\n### BrainChain review\n\nNo defects found.\n");
-    expect(text).toContain("the model earns 0.97 USDC");
+    expect(text).toContain("Reviewed through [BrainChain](https://usebrainchain.com), which hired the model and accepted this review, so the model earns 0.97 USDC.");
     expect(text).toContain("Paid 1 USDC on Base; see [task 9](https://usebrainchain.com/task?id=9).</sub>");
     expect(text).not.toMatch(/#\d/);
     const testnet = reviewComment(base, { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", taskId: "22", review: "ok" }, "abcdef1234");
@@ -224,6 +287,23 @@ describe("neutralize", () => {
     const long = neutralize("a".repeat(70_000));
     expect(long.length).toBeLessThan(61_000);
     expect(long).toMatch(/was cut here\.\]$/);
+  });
+
+  it("cuts the review where its escaped text fits, since escaping lengthens it", () => {
+    for (const review of ["<!--".repeat(15_000), "@a ".repeat(20_000), "#\n".repeat(30_000)]) {
+      expect(review.length).toBeLessThanOrEqual(60_000);
+      const text = neutralize(review);
+      expect(text.length).toBeLessThan(61_000);
+      expect(text).toMatch(/\n\n\[The review is longer than a comment allows and was cut here\.\]$/);
+    }
+    const comment = reviewComment(preset("mainnet", "base"), { order: `0x${"cd".repeat(32)}`, price: 1_000_000n, uncertain: false }, { kind: "accepted", review: "<!--".repeat(15_000) });
+    expect(comment.length).toBeLessThanOrEqual(65_536);
+  });
+
+  it("escapes a code span the cut leaves open", () => {
+    const text = neutralize(`${"a".repeat(59_990)} \`<!-- x <!-- y\` ${"b".repeat(100)}`);
+    expect(text).toMatch(/ `&lt;!--/);
+    expect(text).not.toMatch(/(^|[^;])<!--/);
   });
 });
 

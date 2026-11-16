@@ -7,10 +7,10 @@ branding:
 
 inputs:
   payer-key:
-    description: Private key of the wallet that pays for reviews, from a repository secret. Fund that wallet with only what you plan to spend.
+    description: Private key of the wallet that pays for reviews, from a repository secret, as 64 hex characters with or without 0x. Fund that wallet with only what you plan to spend.
     required: true
   pay-on:
-    description: "base pays in USDC on Base with a signature alone; robinhood pays in USDG on Robinhood Chain after a one-time Permit2 approval."
+    description: "base pays in USDC on Base with a signature alone. robinhood pays in USDG on Robinhood Chain through Permit2: approve it for what you plan to spend, since each review draws the allowance down; the approval needs ETH for gas."
     default: base
   network:
     description: mainnet, or testnet for test USDC on Base Sepolia or test USDG on Robinhood Chain testnet.
@@ -22,7 +22,10 @@ inputs:
     description: Minutes to wait for the graded review, from 1 to 300, counted from when the action starts. The order keeps running either way.
     default: "20"
   review-bots:
-    description: "true also reviews pull requests opened by bots, such as Dependabot."
+    description: "true also reviews pull requests opened by bots, such as Dependabot. Their pull requests read Dependabot secrets only, so add the payer key there too."
+    default: "false"
+  review-private:
+    description: "true reviews pull requests in a private repository. BrainChain publishes everything sent for review, the diff included, so that code becomes public."
     default: "false"
   github-token:
     description: "Token that reads the diff and posts the review. Needs pull-requests: write, and contents: read for wider context."
@@ -30,7 +33,7 @@ inputs:
 
 outputs:
   order:
-    description: The BrainChain order id, set once paid, when a re-run waits on a paid order, or when the commit already has a review. Also set when the job stops waiting.
+    description: The BrainChain order id, set once the payment is sent, when a re-run waits on a paid order, when the commit already has a review, or when the job stops waiting. Empty when the payment does not settle.
   task-id:
     description: The task's id on BrainChain, set once the task is posted, including when the job stops waiting after that.
   accepted:

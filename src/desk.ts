@@ -6,6 +6,8 @@ import { keccak256, toBytes, type PrivateKeyAccount } from "viem";
 import { amount, type Preset } from "./presets.js";
 
 const MAX_TIMEOUT_SECONDS = 600;
+/** How long each request to the desk may take, the one carrying the payment included. */
+const REQUEST_TIMEOUT = 120_000;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export interface Brief {
@@ -18,7 +20,7 @@ export interface Posted {
   order: `0x${string}`;
   /** What was signed, in token units. */
   price: bigint;
-  /** The connection dropped after the payment was signed: the order may exist, so it is followed, never paid again. */
+  /** The connection dropped after the payment was signed. The order may exist: follow it, never pay again. */
   uncertain: boolean;
 }
 
@@ -27,10 +29,18 @@ export type Recorder = (signed: Pick<Posted, "order" | "price">) => Promise<void
 
 /**
  * Pays the desk for one task. The signed payment is sent only once `record`
- * has kept its order, so a run that stops at any point after leaves the order
- * behind for the next one. Throws only when nothing was charged.
+ * has kept its order: a run that stops at any point after that leaves the
+ * order for the next run to follow. Throws only when nothing was charged.
  */
-export async function post(preset: Preset, account: PrivateKeyAccount, maxPrice: bigint, brief: Brief, record: Recorder, fetchImpl: typeof fetch = fetch): Promise<Posted> {
+export async function post(
+  preset: Preset,
+  account: PrivateKeyAccount,
+  maxPrice: bigint,
+  brief: Brief,
+  record: Recorder,
+  fetchImpl: typeof fetch = fetch,
+  timeout = REQUEST_TIMEOUT,
+): Promise<Posted> {
   let signed: { payload: unknown } | undefined;
   /** Why the order could not be recorded, which kept the payment from being sent. */
   let unrecorded: { error: unknown } | undefined;
@@ -53,7 +63,7 @@ export async function post(preset: Preset, account: PrivateKeyAccount, maxPrice:
 
   // The price is read off the 402 challenge: x402 refuses a price above max-price without saying what it was.
   const observed: typeof fetch = async (input, init) => {
-    // The desk names the order after the payment in this header, so it is known before the request leaves.
+    // The order id is the hash of the payment in this header, known before the request leaves.
     const payment = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("payment-signature");
     if (payment) {
       try {
@@ -63,7 +73,9 @@ export async function post(preset: Preset, account: PrivateKeyAccount, maxPrice:
         throw error;
       }
     }
-    const reply = await fetchImpl(input, init);
+    // Each request gets its own timeout, started after the order is recorded. One signal passed to x402 would reach the
+    // paid request only through clones, which drop the link once garbage-collected, and would count the time record() took.
+    const reply = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeout) });
     if (reply.status === 402) asked = challengePrice(reply, preset);
     return reply;
   };
@@ -72,14 +84,14 @@ export async function post(preset: Preset, account: PrivateKeyAccount, maxPrice:
     response = await wrapFetchWithPayment(observed, client)(`${preset.desk}/x402/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(brief),
-      signal: AbortSignal.timeout(120_000),
+      // Only the fields the desk takes: a wider brief would send the action's own bookkeeping, and count against the desk's byte limit.
+      body: JSON.stringify({ title: brief.title, brief: brief.brief, levels: brief.levels }),
     });
   } catch (error) {
     if (unrecorded) throw unrecorded.error;
     if (signed) return { order: orderId(signed), price, uncertain: true };
     const message = (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
-    // x402's own wording names its settings, not this action's inputs, so it goes to the debug log only.
+    // x402's wording refers to its own settings, which a user of this action never sees.
     core.debug(`x402: ${message}`);
     const refused = refusal(message, preset, maxPrice, asked);
     if (refused) throw new Error(`${refused} Nothing was charged.`);
@@ -93,10 +105,11 @@ export async function post(preset: Preset, account: PrivateKeyAccount, maxPrice:
   // before settling. Any other answer to a signed payment may have charged it,
   // so the order is followed, never paid for again.
   if (signed && response.status !== 400 && response.status !== 402) return { order: order ?? orderId(signed), price, uncertain: true };
-  const error = typeof reply.error === "string" ? reply.error : undefined;
+  const error = typeof reply.error === "string" ? reply.error.trim() : undefined;
   // A brief within 32,000 characters can still pass 64,000 bytes once encoded: non-ASCII text and escapes grow it.
   if (response.status === 400 && error && /too large to post/i.test(error)) throw new Error("BrainChain refused the brief as too large to post: over 64,000 bytes as JSON. Nothing was charged.");
-  throw new Error(`${error ?? `BrainChain answered ${response.status}.`} Nothing was charged.`);
+  // The desk's text may end without a full stop, as "Payment verification failed: insufficient_funds" does.
+  throw new Error(`${error ? error.replace(/(?<![.!?])$/, ".") : `BrainChain answered ${response.status}.`} Nothing was charged.`);
 }
 
 /** The price in this preset's token among a desk offer's terms, as both the 402 challenge and GET /x402/tasks list them. */
@@ -166,7 +179,7 @@ export type Outcome =
 
 interface OrderView {
   state?: string;
-  taskId?: string;
+  taskId?: unknown;
   task?: { status?: string; accepted?: boolean };
   result?: string;
 }
@@ -176,7 +189,11 @@ export async function check(preset: Preset, order: string, fetchImpl: typeof fet
   if (response.status === 404) return { kind: "waiting", state: "unknown" };
   if (!response.ok) return { kind: "waiting", state: `http ${response.status}` };
   const view = (await response.json()) as OrderView;
-  const taskId = view.taskId;
+  // Both reach the job log, where a line starting with :: is a workflow command, and the task id reaches the comment too:
+  // anything but a number or a plain word is dropped.
+  const id = String(view.taskId ?? "");
+  const taskId = /^\d+$/.test(id) ? id : undefined;
+  const word = (value: unknown) => (typeof value === "string" && /^[a-z][a-z-]{0,39}$/.test(value) ? value : undefined);
   if (view.state === "failed") return { kind: "failed", reason: "The payment did not settle. Nothing was charged." };
   if (view.state === "refund-failed") return { kind: "refund-failed", ...(taskId ? { taskId } : {}) };
   if (view.state === "refunding" || view.state === "refunded" || view.task?.accepted === false) return { kind: "rejected", ...(taskId ? { taskId } : {}) };
@@ -185,5 +202,5 @@ export async function check(preset: Preset, order: string, fetchImpl: typeof fet
     const text = await fetchImpl(view.result, { signal: AbortSignal.timeout(20_000) });
     if (text.ok) return { kind: "accepted", ...(taskId ? { taskId } : {}), review: await text.text() };
   }
-  return { kind: "waiting", ...(taskId ? { taskId } : {}), state: view.task?.status ?? view.state ?? "unknown" };
+  return { kind: "waiting", ...(taskId ? { taskId } : {}), state: word(view.task?.status) ?? word(view.state) ?? "unknown" };
 }
